@@ -73,12 +73,14 @@ and request hardening — port of the pi-provider-litellm extension.
   (public-safe), docs/login-flow.md, .gitignore, CHANGELOG.
 - Acceptance: npx tsc --noEmit green; npm test green (no tests yet OK);
   no internal hosts in tracked files.
+- Status: completed (commit 3518823).
 
 ### T2. Config module (port config.ts + gateway-url.ts)
 - resolveConfig with env/options/stored/prompt precedence, normalizeBaseUrl
   (strip trailing /v1), gateway-url.ts helpers (stored-credential origin,
   scheme upgrade).
 - Acceptance: unit tests green, pure functions, no host literals.
+- Status: completed (commit 3518823).
 
 ### T3. LiteLLM client module (port client.ts)
 - Discovery fetch + validation (contract_version=1, S256, same-origin,
@@ -86,6 +88,7 @@ and request hardening — port of the pi-provider-litellm extension.
   refreshGrant (rotation), revokeToken, fetchModels, fetchModelInfo,
   fetchBudgetInfo; redirect: "manual" guard; timeout via AbortSignal.
 - Acceptance: unit tests with mocked fetch; contract validation covered.
+- Status: completed (commit 01b2069).
 
 ### T4. OAuth PKCE login flow (port pkce.ts + oauth.ts)
 - generatePkce/randomState, LoopbackCallbackServer (127.0.0.1, ephemeral,
@@ -99,6 +102,7 @@ and request hardening — port of the pi-provider-litellm extension.
 - API key path: validate key against /v1/models, synthesize credentials,
   persist authMode=api_key in state file.
 - Acceptance: unit tests PKCE/state/parse; loopback server test.
+- Status: completed (commit 01b2069).
 
 ### T5. State file + catalog cache modules
 - state.ts: read/write/update state.json (atomic), schema versioned.
@@ -106,6 +110,7 @@ and request hardening — port of the pi-provider-litellm extension.
   (port catalog.ts cache functions, path under
   ~/.local/share/opencode/actsis-litellm/).
 - Acceptance: unit tests green (tmp dirs, no network).
+- Status: completed (commit 3518823).
 
 ### T6. Catalog discovery + mapping (port catalog.ts)
 - fetchCatalogModels: /v1/models (include_metadata) + /model/info
@@ -114,43 +119,43 @@ and request hardening — port of the pi-provider-litellm extension.
   config shape with per-million costs, defaults 128000/16384 → align to
   community plugin defaults (32768) decision: keep 128000/16384 (pi parity).
 - Acceptance: unit tests mapping + filter + enrichment merge.
+- Status: completed (commit 3518823).
 
-### T7. Plugin core: config hook + auth hook wiring (index.ts)
-- Plugin factory: resolve non-interactive config; `config` hook injects
-  provider (openai-compatible npm, baseURL, models from cache/discovery with
-  TTL check) + registers markdown commands (litellm-status, litellm-models,
-  litellm-logout templates instructing to call the custom tools).
-- `auth` hook: loader (getAuth → {apiKey, baseURL, fetch}) with custom fetch
-  doing: inject Bearer from oauth access or api key state; proactive refresh
-  (expires margin 300s) persisted via client.auth.set + state update; 429
-  budget/throttle classification → enriched Error message; overflow phrase
-  detection → context_length_exceeded marker; keep X-Litellm-Session-ID
-  header parity from community plugin.
-- methods: prompts (url if needed, method select), SSO authorize
-  (loopback PKCE auto), API key method (type api, prompt key, validate).
-- Acceptance: unit tests for fetch wrapper classification + refresh
-  persistence call; config injection merges without clobbering.
+### T7. Plugin core: config hook + auth hook wiring
+- Plugin factory in `src/plugin.ts` (kept there; `src/index.ts` re-exports it):
+  resolves non-interactive config; `config` hook injects provider
+  (openai-compatible npm, baseURL, models from cache/discovery with TTL check)
+  + registers markdown commands (`litellm-status`, `litellm-models`,
+  `litellm-logout` templates instructing the agent to call the matching tool).
+- `auth` hook: loader (`getAuth` → `{apiKey, baseURL, fetch}`) with custom
+  fetch that injects Bearer, does proactive refresh persisted via
+  `client.auth.set`, and classifies 429 budget/throttle and overflow errors.
+- methods: SSO oauth method and API key method, both with the gateway URL
+  prompt and validation.
+- `provider.models` hook implemented as the live catalog path.
+- `chat.headers` hook adds `X-Litellm-Session-ID` when the provider matches.
+- `chat.params` hook normalizes `thinking` options for this provider.
+- Implementation: `src/plugin.ts`, pure helpers tested in `test/plugin.test.ts`.
+- Acceptance: unit tests for fetch wrapper classification + config injection
+  merge semantics; `npx tsc --noEmit` green.
+- Status: completed.
 
-### T8. Tools + commands: status/models/logout
-- tool definitions (litellm_status, litellm_models, litellm_logout) with
-  tool.schema empty args; execute reads state + auth via client (auth.json
-  via SDK? no — use getAuth closure from auth hook? tools run outside loader;
-  read auth.json via SDK client.auth (none) — decide: plugin state file +
-  client.auth via SDK `client.auth` endpoints unavailable; simplest: status
-  reads state file + catalog cache + tries /key/info with token from
-  auth.json file read (read-only, same location OpenCode uses).
-- commands (config hook): markdown templates referencing the tools; toast/
-  log output; force-sync models via direct fetchCatalogModels + cache update
-  (config hook not re-runnable at runtime; document that new models appear
-  after restart OR via provider.models hook — implement provider.models hook
-  as the live path and config injection as bootstrap).
-- Acceptance: unit tests for tool handlers; manual smoke in TUI.
+### T8. Tools + commands + auth-store
+- Tool definitions (`litellm_status`, `litellm_models`, `litellm_logout`)
+  built in `src/tools.ts` via the `tool` helper; `src/auth-store.ts` provides
+  `readAuthEntry`/`clearAuthEntry` for `~/.local/share/opencode/auth.json`.
+- Commands are registered by the config hook in `src/plugin.ts`.
+- Implementation: `src/tools.ts` + `src/auth-store.ts` + `test/tools.test.ts`
+  + `test/auth-store.test.ts`.
+- Acceptance: unit tests for tool handlers; `npx tsc --noEmit` green.
+- Status: completed.
 
 ### T9. Budget + limit/overflow normalization modules
 - Port budget.ts (fetchBudgetInfo/formatBudgetLine/percent) — used by status
   tool and fetch wrapper budget warning; port limit-errors.ts classification
   and overflow.ts patterns; integrate into custom fetch (T7).
 - Acceptance: unit tests green (pure functions).
+- Status: completed (commit 3518823).
 
 ### T10. Docs + packaging validation
 - README public-safe (placeholders, install via git: / local path, config,
@@ -158,6 +163,7 @@ and request hardening — port of the pi-provider-litellm extension.
   sequence, CHANGELOG; leak-check no internal hosts; npm pack smoke; local
   install smoke in ~/.config/opencode (T11 covers global switch).
 - Acceptance: docs reviewed; npm pack contains src only; smoke OK.
+- Status: pending.
 
 ### T11. Global config switch (user machine)
 - Replace `opencode-provider-litellm@0.10.0` entry with
@@ -167,6 +173,16 @@ and request hardening — port of the pi-provider-litellm extension.
   gateway models after user login.
 - Acceptance: opencode TUI shows actsis-litellm provider; login works;
   community plugin removed from config.
+- Status: pending (user-machine step; out of scope for automated tests).
+
+## Verification evidence
+
+- `npm run typecheck`: 0 errors.
+- `npm test`: 13 test files, 160 tests passed.
+- Files added/changed for T7/T8: `src/plugin.ts`, `src/index.ts`,
+  `src/tools.ts`, `src/auth-store.ts`, `test/plugin.test.ts`,
+  `test/tools.test.ts`, `test/auth-store.test.ts`, `tsconfig.json` (added
+  `"DOM"` lib for `RequestInfo`).
 
 ## Evidence log
 
