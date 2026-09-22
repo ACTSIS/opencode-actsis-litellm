@@ -1,4 +1,7 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { Config, PluginInput } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk/v2";
 import {
@@ -8,6 +11,7 @@ import {
   ActsisActiveLLMPlugin,
   resolveClosure,
 } from "../src/plugin.ts";
+import { writePluginState } from "../src/state.ts";
 import type { OpencodeModelConfig } from "../src/catalog-cache.ts";
 import type { createOpencodeClient } from "@opencode-ai/sdk";
 
@@ -137,6 +141,31 @@ describe("ActsisActiveLLMPlugin auth hook structure", () => {
 });
 
 describe("auth loader", () => {
+  let stateDir: string;
+  const savedEnv: { url?: string; stateDir?: string } = {};
+
+  beforeEach(async () => {
+    stateDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-test-"));
+    savedEnv.url = process.env.ACTSIS_LITELLM_URL;
+    savedEnv.stateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+    delete process.env.ACTSIS_LITELLM_URL;
+    process.env.ACTSIS_LITELLM_STATE_DIR = stateDir;
+  });
+
+  afterEach(async () => {
+    if (savedEnv.url !== undefined) {
+      process.env.ACTSIS_LITELLM_URL = savedEnv.url;
+    } else {
+      delete process.env.ACTSIS_LITELLM_URL;
+    }
+    if (savedEnv.stateDir !== undefined) {
+      process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
+    } else {
+      delete process.env.ACTSIS_LITELLM_STATE_DIR;
+    }
+    await rm(stateDir, { recursive: true, force: true });
+  });
+
   it("returns an empty object when getAuth throws", async () => {
     const hooks = await ActsisActiveLLMPlugin(makeInput(), { url: "https://gw.example.com" });
     const loader = hooks.auth!.loader!;
@@ -164,6 +193,18 @@ describe("auth loader", () => {
     expect(result.apiKey).toBe("");
     expect(result.baseURL).toBe("https://gw.example.com/v1");
     expect(result.fetch).toBeDefined();
+  });
+
+  it("prefers the options URL over a state file gatewayUrl for the same provider", async () => {
+    await writePluginState(
+      { version: 1, gatewayUrl: "http://statefile.invalid", providerId: "actsis-litellm" },
+      stateDir,
+    );
+    const hooks = await ActsisActiveLLMPlugin(makeInput(), { url: "https://options.invalid" });
+    const loader = hooks.auth!.loader!;
+    const auth: Auth = { type: "api", key: "sk-test" };
+    const result = await loader(async () => auth);
+    expect(result.baseURL).toBe("https://options.invalid/v1");
   });
 });
 

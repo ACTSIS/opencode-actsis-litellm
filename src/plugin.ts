@@ -393,11 +393,15 @@ export function buildAuthLoader(closure: PluginClosure, input: PluginInput) {
   return async function authLoader(
     getAuth: () => Promise<Auth>,
   ): Promise<Record<string, unknown>> {
+    // Precedence: env > options URL (closure.baseUrl) > state file. The
+    // closure already resolved that order; the state file only breaks ties
+    // for a providerId mismatch so the login-time URL wins after login.
     const state = await readPluginState(closure.stateDir);
     const baseUrl =
-      state?.gatewayUrl && closure.providerId === state.providerId
+      closure.baseUrl ??
+      (state?.gatewayUrl && closure.providerId === state.providerId
         ? normalizeBaseUrl(state.gatewayUrl)
-        : (closure.baseUrl ?? null);
+        : null);
     const baseURL = baseUrl ? `${baseUrl}/v1` : "";
 
     let current: Auth;
@@ -476,9 +480,9 @@ export function buildProviderModels(closure: PluginClosure) {
     }
 
     const state = await readPluginState(closure.stateDir);
-    const baseUrl = state?.gatewayUrl
-      ? normalizeBaseUrl(state.gatewayUrl)
-      : (closure.baseUrl ?? null);
+    // Same precedence as buildAuthLoader: env > options URL > state file.
+    const baseUrl = closure.baseUrl ??
+      (state?.gatewayUrl ? normalizeBaseUrl(state.gatewayUrl) : null);
 
     const cached = await loadCachedModels(closure.stateDir);
     if (cached && Object.keys(cached).length > 0) {
@@ -532,7 +536,12 @@ export default async function ActsisActiveLLMPlugin(
   "chat.headers"?: (input: { sessionID: string; model?: { providerID: string; modelID: string } }, output: { headers: Record<string, string> }) => Promise<void>;
   "chat.params"?: (input: { model?: { providerID: string; modelID: string } }, output: { options: Record<string, unknown> }) => Promise<void>;
 }> {
-  const closure = await resolveClosure(input, options, defaultAuthPath(), undefined);
+  const closure = await resolveClosure(
+    input,
+    options,
+    defaultAuthPath(),
+    process.env.ACTSIS_LITELLM_STATE_DIR,
+  );
 
   const hooks: Awaited<ReturnType<typeof ActsisActiveLLMPlugin>> = {
     config: undefined,
