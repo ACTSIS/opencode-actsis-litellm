@@ -192,6 +192,19 @@ and request hardening — port of the pi-provider-litellm extension.
   Codex auth plugin (loopback + client.auth.set persistence), community
   opencode-provider-litellm 0.10.0 (config injection + model mapping
   defaults proven in this environment).
+- 2026-09-22 T1+T2 (commit c509ed3): scaffold + config module, 24 tests.
+- 2026-09-22 T3+T4 (commit 01b2069): client/PKCE/oauth/state/cache, 63 tests.
+- 2026-09-22 T6+T9 (commit 3518823): catalog/budget/limit/overflow, 134 tests.
+- 2026-09-22 T7+T8 (commit fa41de5): plugin core + tools, 160 tests.
+- 2026-09-22 Live smoke (opencode 1.18.31): plugin loaded from local path via
+  plugin array; config hook injected provider actsis-litellm; models listed
+  from cache (actsis-litellm/smoke-model-a|b). Gotchas found:
+  (1) local plugin dir needs node_modules present (bun resolves imports at
+  load; OpenCode installs deps on startup for npm plugins only); package-lock
+  from npm is tolerated. (2) Global user config merges with
+  OPENCODE_CONFIG_CONTENT — the old community plugin still errors without
+  LITELLM_* env (expected until T11 swap). (3) Failed module evaluation is
+  silent in OpenCode logs — bisect with console.error probes.
 - 2026-09-22: Worktree infra fixed (same pattern as pi project): directory
   was standalone; recreated as orphan worktree of session clone on branch
   feature/opencode-actsis-litellm; registered for session.
