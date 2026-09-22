@@ -1,10 +1,11 @@
 # opencode-actsis-litellm
 
 An [OpenCode](https://opencode.ai) plugin that adds an **ACTSIS LiteLLM
-gateway** as a dynamic model provider.
+gateway** as a dynamic model provider with OAuth2 PKCE sign-in (SSO), optional
+API-key auth, and a dynamic model catalog.
 
-It supports the native `/login` flow using OAuth2 PKCE, discovers the gateway's
-model catalog at runtime, and routes chat requests through the OpenAI-compatible
+It hooks into OpenCode's native `/login` flow, discovers the gateway's model
+catalog at runtime, and routes chat requests through the OpenAI-compatible
 `/v1/chat/completions` endpoint.
 
 ## Install
@@ -18,116 +19,165 @@ Add the plugin to your OpenCode configuration (for example,
 }
 ```
 
-For local development use a path to this repository:
+Depending on your OpenCode version, the `github:` shorthand is also accepted:
 
 ```json
 {
-  "plugin": ["/home/you/Workspace/opencode-actsis-litellm"]
+  "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
 }
 ```
 
+Once the package is published to npm, the plain package name works too:
+
+```json
+{
+  "plugin": ["opencode-actsis-litellm"]
+}
+```
+
+For local development, point the plugin array at a path to this repository:
+
+```json
+{
+  "plugin": ["/path/to/opencode-actsis-litellm"]
+}
+```
+
+The plugin ships TypeScript source and runs on the Bun runtime embedded in
+OpenCode — no build step is required.
+
+## Login
+
+Start OpenCode and run:
+
+```
+opencode auth login
+```
+
+1. Select the `actsis-litellm` provider.
+2. The **gateway URL** prompt appears when the URL is not already configured
+   (see [Configuration](#configuration) for how to set it ahead of time). This
+   keeps the plugin zero-config: first-time users are simply asked.
+3. Choose a sign-in method:
+   - **SSO (browser)** — OAuth2 Authorization Code flow with PKCE (S256). Your
+     browser opens, you sign in through your identity provider, and the gateway
+     redirects back to a local loopback callback.
+   - **API key** — You paste a LiteLLM API key (`sk-...`). It is validated
+     against `GET /v1/models` before it is stored.
+
+Credentials are persisted by OpenCode in its own credential store; the plugin
+keeps only non-secret gateway metadata in its state file (see
+[Security notes](#security-notes)).
+
 ## Configuration
 
-Zero-config by default. Run `/login`, select `actsis-litellm`, enter the
-gateway base URL, and choose how to sign in.
+Zero-config by default. The gateway base URL is resolved with the following
+precedence (highest first):
 
-For non-interactive or headless setups you can still configure the gateway via:
+| Priority | Source | Example |
+|----------|--------|---------|
+| 1 | Environment variable | `export ACTSIS_LITELLM_URL=https://your-gateway.example.com` |
+| 2 | Plugin options (tuple form in `opencode.json`) | `["opencode-actsis-litellm", { "url": "https://your-gateway.example.com" }]` |
+| 3 | Stored plugin state (written by a previous login) | `~/.local/share/opencode/actsis-litellm/state.json` |
+| 4 | Interactive prompt during `opencode auth login` | Gateway URL prompt with validation |
 
-1. Environment variable:
-   ```bash
-   export ACTSIS_LITELLM_URL=https://your-gateway.example.com
-   ```
-2. Plugin options in `opencode.json`:
-   ```json
-   {
-     "plugin": [
-       "git:github.com/ACTSIS/opencode-actsis-litellm",
-       {
-         "url": "https://your-gateway.example.com",
-         "providerId": "actsis-litellm",
-         "catalogTtlMinutes": 15,
-         "requestTimeoutMs": 30000
-       }
-     ]
-   }
-   ```
-3. Stored plugin state saved after a previous login.
+Plugin options use the `[package, options]` tuple form:
 
-Only `url` is required in the options object. When no URL is configured at
-startup, the provider is still registered with a placeholder so that `/login` can
-prompt you for the URL interactively.
+```json
+{
+  "plugin": [
+    "git:github.com/ACTSIS/opencode-actsis-litellm",
+    {
+      "url": "https://your-gateway.example.com",
+      "providerId": "actsis-litellm",
+      "catalogTtlMinutes": 15,
+      "requestTimeoutMs": 30000
+    }
+  ]
+}
+```
 
-## Commands
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `url` | string | — | Gateway base URL. A trailing `/v1` is stripped automatically. |
+| `providerId` | string | `actsis-litellm` | Provider ID registered in OpenCode. |
+| `catalogTtlMinutes` | number | `15` | Model catalog cache time-to-live in minutes. |
+| `requestTimeoutMs` | number | `30000` | Per-request timeout for gateway HTTP calls in milliseconds. |
 
-| Command | Description |
-|---------|-------------|
-| `/login` | OpenCode's native login flow. Once this provider is registered, select `actsis-litellm` to authenticate. |
-| `/litellm:status` | Show credential state, cache age, and provider status. |
-| `/litellm:models` | Force a fresh model catalog sync and show added/removed models. |
-| `/litellm:logout` | Revoke the refresh token and clear local credentials. |
+## Auth methods
 
-## Login flow
-
-When you run `/login` and pick `actsis-litellm`:
-
-1. **Gateway URL prompt** — If the gateway URL is not already configured, the
-   plugin asks you for it (for example `https://your-gateway.example.com`).
-2. **Sign-in method** — Choose **SSO (browser)** or **API key**.
-3. **SSO path (browser):**
-   - **Discovery** — The plugin fetches `/.well-known/litellm-cli-auth` from the gateway.
-   - **Dynamic client registration** — A public, loopback-only OAuth client is registered.
-   - **PKCE S256** — A local `code_verifier` is generated and hashed into a `code_challenge`.
-   - **Browser consent** — Your browser opens the authorization URL. The gateway authenticates you and shows a team/role picker.
-   - **Loopback callback** — The gateway redirects to `http://127.0.0.1:<ephemeral>/callback` with an authorization `code` and the original `state`.
-   - **Token exchange** — The plugin validates `state` and exchanges the `code` for an `access_token` and a `refresh_token`.
-4. **API key path:**
-   - You are prompted for a LiteLLM API key (`sk-...`).
-   - The key is validated against `GET {gateway}/v1/models`.
-   - A long-lived synthetic credential is stored so OpenCode treats it like any other OAuth credential.
-5. **Credential storage** — OpenCode stores the resulting credentials in its own
-   auth file under `~/.local/share/opencode/auth.json`.
-6. **Refresh rotation** — For SSO, every access-token renewal returns a new
-   `refresh_token`; the plugin updates the stored credentials automatically. API
-   key credentials do not refresh.
-7. **Logout** — `/litellm:logout` clears local state and, for SSO, sends the
-   `refresh_token` to the gateway's revoke endpoint.
-
-For a detailed sequence diagram and security rationale, see
-[`docs/login-flow.md`](docs/login-flow.md).
+| Method | How it works |
+|--------|--------------|
+| **SSO (browser)** | OAuth2 Authorization Code + PKCE (S256). The plugin fetches `/.well-known/litellm-cli-auth` discovery metadata, performs dynamic client registration, opens the browser, and captures the redirect on a loopback-only callback server (`127.0.0.1`, ephemeral port). The callback window is **5 minutes**. Access and refresh tokens are stored by OpenCode; refresh tokens are rotated on renewal. |
+| **API key** | You paste a LiteLLM key (`sk-...`). The key is validated against `GET /v1/models` before being stored. API-key credentials never expire and are never refreshed. |
 
 ## Model catalog
 
 The provider's model list is synced from the gateway at `/v1/models` and
 enriched with details from `/model/info` when available.
 
+- **Chat-mode filter** — Non-chat models (embedding, whisper, TTS, rerank,
+  transcription, moderation, audio, and similar) are excluded, using per-model
+  mode metadata when the gateway reports it and a conservative name heuristic
+  otherwise.
 - **Cache location:** `~/.local/share/opencode/actsis-litellm/models-cache.json`
 - **Default TTL:** 15 minutes (`catalogTtlMinutes`)
-- **Force sync:** Run `/litellm:models`
-- **Cost mapping:** LiteLLM input/output costs are mapped to OpenCode cost fields
-  per 1 million tokens. Missing or zero values default to `0`.
-- **Context defaults:** `context` and `output` limits default to `128000` and
-  `16384` when the gateway does not report them.
+- **Force sync:** Use the `litellm_models` tool or the `/litellm-models`
+  command.
+- **Model picker refresh:** OpenCode reads the model list at startup. After a
+  catalog sync, **restart OpenCode** to see new models in the picker.
+- **Context/output defaults:** `limit.context` and `limit.output` default to
+  `128000` and `16384` when the gateway does not report them.
+- **Cost mapping:** LiteLLM input/output/cache costs are mapped to OpenCode
+  cost fields per 1 million tokens. Missing or zero values default to `0`.
+
+## Tools and commands
+
+| Tool | Command | Description |
+|------|---------|-------------|
+| `litellm_status` | `/litellm-status` | Show credential state, catalog cache age/count, gateway URL, and budget info. |
+| `litellm_models` | `/litellm-models` | Force a fresh model catalog sync and report added/removed models. |
+| `litellm_logout` | `/litellm-logout` | Revoke the refresh token (SSO), clear local credentials, state, and cache. |
+
+The commands are thin templates that instruct the agent to call the matching
+tool and summarize the result, so they work in both the TUI and server mode.
+
+## Error hardening
+
+The plugin wraps gateway chat requests and normalizes the two most common
+failure modes into actionable messages:
+
+- **Budget exceeded** — Surfaced as `Budget exceeded: $<spend> of $<max> used —
+  top up the key budget or wait for the reset.`
+- **Throttling (429)** — Surfaced with the rate-limit type and reset time, for
+  example `Rate limit reached (tpm). Resets at 14:32 (~3 min). OpenCode will
+  retry automatically.` OpenCode retries 429 responses with backoff natively.
+- **Context overflow** — Error messages matching context-window overflow
+  patterns are prefixed with `context_length_exceeded` so OpenCode's
+  compaction logic can react and trim the conversation.
 
 ## Troubleshooting
 
-| Symptom | What to check |
-|---------|---------------|
-| Gateway URL not configured | Run `/login`, pick `actsis-litellm`, and enter the gateway URL. Optional: set `ACTSIS_LITELLM_URL` or add `url` to the plugin options in `opencode.json`. |
-| Credentials rejected by the gateway | For SSO, run `/login` again to obtain fresh tokens. For API key, check the key in the gateway UI and re-run `/login`. |
-| Refresh refused (`invalid_grant`) | The SSO refresh token may be expired, rotated by another client, or revoked. Run `/login` again. |
-| "Login cancelled" | The prompt or method selector was dismissed. Re-run `/login` and complete all steps. |
-| "Login timed out" | The loopback callback window is 5 minutes. If the browser step takes longer, restart `/login`. |
-| Models do not appear | Run `/litellm:models` to force a sync, then check `/litellm:status` for cache count and provider state. |
+| Symptom | What to do |
+|---------|------------|
+| Provider not configured / gateway URL missing | Run `opencode auth login`, select `actsis-litellm`, and enter the gateway URL. Or set `ACTSIS_LITELLM_URL` / add `url` to the plugin options. |
+| Login timed out | The loopback callback window is 5 minutes. If the browser step took longer, run `opencode auth login` again. |
+| Refresh refused (`invalid_grant`) | The SSO refresh token expired, was rotated elsewhere, or was revoked. Log in again. |
+| Models not appearing in the picker | Run `/litellm-models` to force a sync, then restart OpenCode. Check `/litellm-status` for cache count. |
+| Credential rejected by the gateway | For SSO, log in again to obtain fresh tokens. For API keys, verify the key in the gateway UI and log in again. |
 
 ## Security notes
 
-- The callback server binds to `127.0.0.1` on an ephemeral port only.
-- No gateway URL, hostname, IP, token, or user-identifiable data is embedded in
-  the package.
-- Token storage is delegated to OpenCode's credential store; the plugin itself
-  does not write credentials to disk.
-- API keys are validated before storage but are otherwise stored by OpenCode like
-  any other credential.
+- The OAuth callback server binds to `127.0.0.1` on an ephemeral port only and
+  handles a single `/callback` request per login.
+- No gateway hostname, IP, token, or user-identifiable data is embedded in the
+  package or this repository.
+- OAuth credentials and API keys are stored by OpenCode in
+  `~/.local/share/opencode/auth.json` — the plugin does not write tokens itself.
+- The plugin's own state file, `~/.local/share/opencode/actsis-litellm/state.json`,
+  contains only non-secret gateway metadata (gateway URL, discovery snapshot,
+  client ID, auth mode). No tokens are stored there.
+- No tokens or gateway URLs appear in OpenCode config files.
 
 ## License
 
