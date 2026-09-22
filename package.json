@@ -1,0 +1,48 @@
+{
+  "name": "opencode-actsis-litellm",
+  "version": "0.1.0",
+  "description": "OpenCode plugin that adds an ACTSIS LiteLLM gateway as a dynamic provider with OAuth2 PKCE login and dynamic model catalog.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.18.25"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5.7",
+    "vitest": "^3"
+  },
+  "engines": {
+    "opencode": ">=1.14.0"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "litellm",
+    "oauth",
+    "provider"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ACTSIS/opencode-actsis-litellm.git"
+  },
+  "homepage": "https://github.com/ACTSIS/opencode-actsis-litellm#readme",
+  "bugs": {
+    "url": "https://github.com/ACTSIS/opencode-actsis-litellm/issues"
+  },
+  "license": "MIT"
+}
