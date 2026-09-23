@@ -103,9 +103,19 @@ For SSO credentials the `auth.loader` hook is invoked before each request. When
 API-key credentials never refresh; `auth.loader` simply injects the API key as
 a `Bearer` header.
 
+## Post-turn budget snapshot
+
+On `session.idle` (the end of each agent turn) the plugin refreshes the
+budget from the gateway and persists a snapshot — `lastBudgetSnapshot` plus
+a `budgetRefreshedAt` timestamp — in the plugin state file
+(`state.json`). This snapshot is what the `actsis_litellm_status` and
+`actsis_litellm_budget` tools fall back to when a live fetch fails, and what
+the TUI budget widget renders in the sidebar footer (see
+[architecture.md](architecture.md) for the full lifecycle).
+
 ## Logout
 
-`/litellm-logout` (or the `litellm_logout` tool):
+`/actsis-litellm-logout` (or the `actsis_litellm_logout` tool):
 
 1. Revokes the refresh token at the gateway's revocation endpoint (best
    effort; network failures are tolerated because the token expires locally).

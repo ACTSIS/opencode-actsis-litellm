@@ -8,43 +8,32 @@ It hooks into OpenCode's native `/login` flow, discovers the gateway's model
 catalog at runtime, and routes chat requests through the OpenAI-compatible
 `/v1/chat/completions` endpoint.
 
-## Install
+> **Installing?** Start with the step-by-step guide:
+> **[docs/installation.md](docs/installation.md)** — requirements, dual
+> config setup, login walkthrough, verification checklist, and
+> troubleshooting.
 
-Add the plugin to your OpenCode configuration (for example,
-`~/.config/opencode/opencode.json`):
+## Quick start
+
+Add the GitHub spec to **both** OpenCode configuration files (the server
+plugin and the TUI budget widget are registered separately):
 
 ```json
+// ~/.config/opencode/opencode.json (server plugin)
 {
-  "plugin": ["git:github.com/ACTSIS/opencode-actsis-litellm"]
+  "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
 }
-```
 
-Depending on your OpenCode version, the `github:` shorthand is also accepted:
-
-```json
+// ~/.config/opencode/tui.json (budget widget)
 {
   "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
 }
 ```
 
-Once the package is published to npm, the plain package name works too:
-
-```json
-{
-  "plugin": ["opencode-actsis-litellm"]
-}
-```
-
-For local development, point the plugin array at a path to this repository:
-
-```json
-{
-  "plugin": ["/path/to/opencode-actsis-litellm"]
-}
-```
-
-The plugin ships TypeScript source and runs on the Bun runtime embedded in
-OpenCode — no build step is required.
+Then run `opencode auth login`, select `actsis-litellm`, and follow the
+prompts. See **[docs/installation.md](docs/installation.md)** for the full
+walkthrough, alternative install methods (npm package, local path), and the
+post-install verification checklist.
 
 ## Login
 
@@ -152,11 +141,19 @@ tool and summarize the result, so they work in both the TUI and server mode.
 ## TUI widget
 
 An optional TUI widget renders the budget gauge in the OpenCode sidebar
-footer. Enable it by adding the package (or a local path) to the `plugin`
-array of `~/.config/opencode/tui.json`. The widget reads the snapshot
-persisted on `session.idle` (and after `actsis_litellm_budget` refreshes it),
-refreshing on startup and after each turn. It renders nothing when no budget
-data is available and requires a TUI build with plugin support.
+footer. Enable it by adding the package spec to the `plugin` array of
+`~/.config/opencode/tui.json` — **in addition to** the `opencode.json`
+entry; both config files are required (see
+[docs/installation.md](docs/installation.md)). The widget requires a TUI
+build with plugin support and works only with the committed `dist/` bundles:
+OpenCode's TUI loader resolves npm/git packages through the `main` ->
+`dist/tui.js` entrypoint contract, so raw `src/*.tsx` entries are never
+loaded.
+
+The widget reads the snapshot persisted on `session.idle` (the end of each
+agent turn, and after `actsis_litellm_budget` refreshes it), refreshing on
+startup and after each turn with a short debounce so the server-side write
+wins the race. It renders nothing when no budget data is available.
 
 ### Packaging note
 
@@ -166,6 +163,17 @@ with `--ignore-scripts`; a `prepack` build step never runs. `main` and
 the server plugin, `dist/tui.js` for the TUI plugin), mirroring the entrypoint
 resolution OpenCode's TUI loader performs for npm/git packages. After changing
 `src/`, run `npm run build` and commit the regenerated `dist/` files.
+
+## Architecture
+
+For the technical details — module map, OpenCode hooks and integration
+points, the provider/auth loader contract, the packaging and TUI-loader
+behavior, and the budget snapshot lifecycle — see:
+
+- [`docs/architecture.md`](docs/architecture.md) — module map and technical
+  overview.
+- [`docs/login-flow.md`](docs/login-flow.md) — the full OAuth2 PKCE login
+  sequence, refresh rotation, and logout flow.
 
 ## Error hardening
 

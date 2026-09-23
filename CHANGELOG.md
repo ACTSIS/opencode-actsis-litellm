@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Documentation
+
+- **New installation guide** (`docs/installation.md`) — authoritative
+  step-by-step install reference: requirements (OpenCode >= 1.14.0, widget
+  verified on 1.18.32, no manual dependency installs for end users),
+  recommended GitHub spec install in **both** `opencode.json` (server
+  plugin) and `tui.json` (budget widget), npm/local-path alternatives with
+  the same dual-config rule, login walkthrough (conditional gateway URL
+  prompt, SSO with 5-minute callback window vs API key), post-install
+  verification checklist, troubleshooting table, and a packaging note
+  explaining why `dist/` is committed and the `main` -> `dist/tui.js`
+  TUI-loader contract.
+- **New architecture document** (`docs/architecture.md`) — module map of
+  `src/` with per-module responsibilities, OpenCode hook integration
+  (`config`, `auth`, `provider.models`, `event`, `tool`, `chat.headers`,
+  `chat.params`), credential/state/cache file layout, provider registration
+  and auth loader contract, packaging/TUI-loader details, and the budget
+  snapshot lifecycle.
+- **README** — replaced the Install section with a dual-config quick start
+  linking to the installation guide, added a prominent guide link near the
+  top, expanded the TUI widget section (committed `dist/` bundles, dual
+  config, source-build peer deps, `session.idle` snapshot lifecycle), and
+  added an Architecture section linking the technical docs.
+- **`docs/login-flow.md`** — fixed stale tool/command names to
+  `/actsis-litellm-logout` / `actsis_litellm_logout` and documented the
+  post-turn budget snapshot (`session.idle` persistence used by the status
+  and budget tools and the TUI widget).
+
 ### Added
 
 - **Tiered model pricing and paginated model-info fallback** — input/output
