@@ -105,7 +105,7 @@ Commits, one work-unit commit per work item (7 commits max); do NOT push.
   null spend); JSX covered by typecheck + manual smoke.
 - Config: user adds entry to ~/.config/opencode/tui.json (manual step).
 - Acceptance: typecheck + tests green; commit; smoke in opencode TUI.
-- Status: completed (commit pending).
+- Status: completed (commit 4b802b5).
 
 ## Evidence log
 
