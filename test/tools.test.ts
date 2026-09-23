@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import { buildLitellmTools } from "../src/tools.ts";
+import { readPluginState } from "../src/state.ts";
 import type { PluginInput } from "@opencode-ai/plugin";
 import type { createOpencodeClient } from "@opencode-ai/sdk";
 
@@ -126,6 +127,47 @@ describe("actsis_litellm_status", () => {
     expect(budgetLine).toBeDefined();
     expect(budgetLine).toMatch(/^Budget unavailable: /);
     expect(budgetLine).toContain("network down");
+  });
+
+  it("appends the cached budget line after a generic failure when a snapshot is stored", async () => {
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({
+        version: 1,
+        gatewayUrl: "https://gw.example.com",
+        lastBudgetSnapshot: {
+          primary: { spend: 3.5, maxBudget: 20, tpmLimit: null, rpmLimit: null, budgetResetAt: null, keyAlias: null },
+          ownKeys: [],
+          source: "key_info",
+        },
+        budgetRefreshedAt: Date.now() - 90_000,
+      }),
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": { type: "api", key: "sk-test" },
+      }),
+    );
+
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("network down");
+    });
+
+    const result = await buildLitellmTools({
+      providerId: "actsis-litellm",
+      getState: async () => null,
+      timeout: 5_000,
+      input: makePluginInput(),
+      stateDir: tmpDir,
+      authPath,
+      fetchImpl,
+    }).actsis_litellm_status.execute({}, makeToolContext());
+    const output = typeof result === "string" ? result : result.output;
+
+    expect(output).toContain("Budget unavailable: ");
+    expect(output).toContain("network down");
+    expect(output).toMatch(/Budget \(cached \d+s ago\): \$3\.50 \/ \$20\.00 used \(18%\)/);
   });
 
   it("shows oauth expiry and budget line from gateway", async () => {
@@ -399,6 +441,39 @@ describe("actsis_litellm_budget", () => {
     expect(output).toBe("gateway URL not configured");
   });
 
+  it("persists the snapshot and cached timestamp on success", async () => {
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({ version: 1, gatewayUrl: "https://gw.example.com" }),
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": { type: "api", key: "sk-test" },
+      }),
+    );
+
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: 4.56, max_budget: 50 }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const output = await buildBudgetTools(fetchImpl).actsis_litellm_budget.execute(
+      {},
+      makeToolContext(),
+    );
+    expect(output).toMatch(/Budget .*9% · \$4\.56\/\$50\.00/);
+
+    const state = await readPluginState(tmpDir);
+    expect(state?.lastBudgetSnapshot?.primary.spend).toBe(4.56);
+    expect(state?.budgetRefreshedAt).toEqual(expect.any(Number));
+  });
+
   it("returns the AuthError message when the gateway rejects the credential", async () => {
     await writeFile(
       path.join(tmpDir, "state.json"),
@@ -445,6 +520,39 @@ describe("actsis_litellm_budget", () => {
     expect(output).toBe(
       "error: Failed to fetch user info: network down",
     );
+  });
+
+  it("appends the last known budget line on failure when a snapshot is cached", async () => {
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({
+        version: 1,
+        gatewayUrl: "https://gw.example.com",
+        lastBudgetSnapshot: {
+          primary: { spend: 2.25, maxBudget: 30, tpmLimit: null, rpmLimit: null, budgetResetAt: null, keyAlias: null },
+          ownKeys: [],
+          source: "key_info",
+        },
+        budgetRefreshedAt: Date.now() - 120_000,
+      }),
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": { type: "api", key: "sk-test" },
+      }),
+    );
+
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("network down");
+    });
+
+    const output = await buildBudgetTools(fetchImpl).actsis_litellm_budget.execute(
+      {},
+      makeToolContext(),
+    );
+    expect(output).toContain("error: ");
+    expect(output).toContain("last known: $2.25 / $30.00 used (8%)");
   });
 });
 

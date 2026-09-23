@@ -1,3 +1,4 @@
+import type { GatewayBudgetSnapshot } from "./budget.ts";
 import path from "node:path";
 import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { renameSync } from "node:fs";
@@ -18,6 +19,8 @@ export interface PluginState {
   revocationEndpoint?: string;
   resource?: string;
   schemeUpgraded?: boolean;
+  lastBudgetSnapshot?: GatewayBudgetSnapshot;
+  budgetRefreshedAt?: number;
   savedAt?: number;
 }
 

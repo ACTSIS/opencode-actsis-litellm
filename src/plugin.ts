@@ -14,8 +14,10 @@ import { readAuthEntry, clearAuthEntry, defaultAuthPath } from "./auth-store.ts"
 import { resolveConfig, normalizeBaseUrl, type PluginOptions } from "./config.ts";
 import { ConfigError } from "./errors.ts";
 import { ensureFreshToken } from "./gateway-client.ts";
+import { fetchGatewayBudget } from "./budget.ts";
 
 import type { PluginInput, PluginOptions as OpenCodePluginOptions, Config, AuthOAuthResult } from "@opencode-ai/plugin";
+import type { Event } from "@opencode-ai/sdk";
 import type { Auth } from "@opencode-ai/sdk/v2";
 import type { Provider as ProviderV2, Model as ModelV2 } from "@opencode-ai/sdk/v2/types";
 
@@ -470,6 +472,7 @@ export default async function ActsisActiveLLMPlugin(
   tool?: Record<string, unknown>;
   "chat.headers"?: (input: { sessionID: string; model?: { providerID: string; modelID: string } }, output: { headers: Record<string, string> }) => Promise<void>;
   "chat.params"?: (input: { model?: { providerID: string; modelID: string } }, output: { options: Record<string, unknown> }) => Promise<void>;
+  event?: (input: { event: Event }) => Promise<void>;
 }> {
   const closure = await resolveClosure(
     input,
@@ -485,6 +488,7 @@ export default async function ActsisActiveLLMPlugin(
     tool: undefined,
     "chat.headers": undefined,
     "chat.params": undefined,
+    event: undefined,
   };
 
   hooks.config = async (config: OpenCodeConfig): Promise<void> => {
@@ -581,6 +585,39 @@ export default async function ActsisActiveLLMPlugin(
       if (type !== "disabled" && type !== "adaptive") {
         output.options.thinking = { type: "adaptive" };
       }
+    }
+  };
+
+  // session.idle fires at the end of an agent turn (pi's `agent_end` parity):
+  // refresh the stored budget snapshot in the background.
+  hooks.event = async ({ event }: { event: Event }): Promise<void> => {
+    if (event.type !== "session.idle") return;
+    try {
+      const state = await readPluginState(closure.stateDir);
+      const entry = await readAuthEntry(closure.authPath, closure.providerId);
+      if (!state?.gatewayUrl || !entry) return;
+      const token = entry.type === "oauth"
+        ? await ensureFreshToken(
+          { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+          {
+            state,
+            timeoutMs: closure.requestTimeoutMs,
+            onRefreshed: async (next) => {
+              await input.client.auth.set({
+                path: { id: closure.providerId },
+                body: { type: "oauth", ...next },
+              });
+            },
+          },
+        )
+        : entry.key;
+      const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, closure.requestTimeoutMs);
+      await updatePluginState(
+        { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
+        closure.stateDir,
+      );
+    } catch {
+      // Background refresh: failures are silent; tools force a fresh fetch.
     }
   };
 

@@ -19,6 +19,11 @@
   precise failure (no credential, gateway URL not configured, credential
   rejected, network/timeout error) instead of a silent empty result
   (mirrors pi-provider-litellm 0165eae).
+- **Post-turn budget refresh** — the plugin refreshes the stored budget
+  snapshot on `session.idle` (end of an agent turn, pi `agent_end` parity)
+  and persists it with a timestamp in plugin state; `actsis_litellm_status`
+  and `actsis_litellm_budget` report the last known line (with age) when a
+  live fetch fails.
 
 ### Changed
 

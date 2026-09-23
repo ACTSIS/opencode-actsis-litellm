@@ -1,5 +1,5 @@
 import { tool } from "@opencode-ai/plugin";
-import { readPluginState, writePluginState, type PluginState } from "./state.ts";
+import { readPluginState, writePluginState, updatePluginState, type PluginState } from "./state.ts";
 import {
   loadCachedModels,
   saveCachedModels,
@@ -93,6 +93,10 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
               )
               : entry.key;
             const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
+            await updatePluginState(
+              { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
+              stateDir,
+            );
             const primary = formatBudgetLine(snapshot.primary);
             if (primary) {
               budgetLines = [`Budget: ${primary}`];
@@ -112,7 +116,23 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
           if (err instanceof AuthError) {
             budgetLines = ["Budget: Credential rejected — run /login again"];
           } else {
-            budgetLines = [`Budget unavailable: ${err instanceof Error ? err.message : String(err)}`];
+            const reason = err instanceof Error ? err.message : String(err);
+            const cachedSnapshot = state?.lastBudgetSnapshot;
+            const cachedAt = state?.budgetRefreshedAt;
+            const cachedLine =
+              cachedSnapshot && typeof cachedAt === "number"
+                ? formatBudgetLine(cachedSnapshot.primary)
+                : null;
+            const cachedAgeSeconds =
+              cachedSnapshot && typeof cachedAt === "number"
+                ? Math.max(0, Math.floor((Date.now() - cachedAt) / 1000))
+                : null;
+            budgetLines = [
+              `Budget unavailable: ${reason}`,
+              ...(cachedLine && cachedAgeSeconds !== null
+                ? [`Budget (cached ${cachedAgeSeconds}s ago): ${cachedLine}`]
+                : []),
+            ];
           }
         }
 
@@ -160,6 +180,10 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
             )
             : entry.key;
           const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
+          await updatePluginState(
+            { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
+            stateDir,
+          );
           const text = formatBudgetStatus(snapshot.primary);
           return text ?? "no spend data (spend null)";
         } catch (err) {
@@ -167,7 +191,10 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
             return err.message;
           }
           const reason = err instanceof Error ? err.message : String(err);
-          return `error: ${reason}`;
+          const cachedLine = state.lastBudgetSnapshot && state.budgetRefreshedAt
+            ? formatBudgetLine(state.lastBudgetSnapshot.primary)
+            : null;
+          return `error: ${reason}${cachedLine ? ` (last known: ${cachedLine})` : ""}`;
         }
       },
     }),

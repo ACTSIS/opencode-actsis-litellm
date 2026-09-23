@@ -12,6 +12,7 @@ import {
   resolveClosure,
 } from "../src/plugin.ts";
 import { writePluginState, readPluginState } from "../src/state.ts";
+import { defaultAuthPath } from "../src/auth-store.ts";
 import type { OpencodeModelConfig } from "../src/catalog-cache.ts";
 import type { createOpencodeClient } from "@opencode-ai/sdk";
 
@@ -299,6 +300,96 @@ describe("makeAuthFetch", () => {
     await expect(fetch("https://gw.example.com/v1/chat/completions")).rejects.toThrow(/context_length_exceeded/);
   });
 });
+
+describe("event hook budget refresh", () => {
+  let tmpDir: string;
+  const savedEnv: { stateDir?: string; dataHome?: string } = {};
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-event-test-"));
+    savedEnv.stateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+    savedEnv.dataHome = process.env.XDG_DATA_HOME;
+    process.env.ACTSIS_LITELLM_STATE_DIR = tmpDir;
+    // Point defaultAuthPath() inside the tmp dir.
+    process.env.XDG_DATA_HOME = tmpDir;
+    await writePluginState(
+      { version: 1, gatewayUrl: "https://gw.example.com", providerId: "actsis-litellm" },
+      tmpDir,
+    );
+    const { writeFile, mkdir } = await import("node:fs/promises");
+    await mkdir(path.dirname(defaultAuthPath()), { recursive: true });
+    await writeFile(
+      defaultAuthPath(),
+      JSON.stringify({ "actsis-litellm": { type: "api", key: "sk-test" } }),
+    );
+  });
+
+  afterEach(async () => {
+    if (savedEnv.stateDir !== undefined) {
+      process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
+    } else {
+      delete process.env.ACTSIS_LITELLM_STATE_DIR;
+    }
+    if (savedEnv.dataHome !== undefined) {
+      process.env.XDG_DATA_HOME = savedEnv.dataHome;
+    } else {
+      delete process.env.XDG_DATA_HOME;
+    }
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function stubBudgetFetch(spend: number) {
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend, max_budget: 100 }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }));
+  }
+
+  it("persists a budget snapshot on session.idle", async () => {
+    stubBudgetFetch(7.89);
+    const hooks = await ActsisActiveLLMPlugin(makeInput());
+
+    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "s1" } } as never });
+
+    const state = await readPluginState(tmpDir);
+    expect(state?.lastBudgetSnapshot?.primary.spend).toBe(7.89);
+    expect(state?.budgetRefreshedAt).toEqual(expect.any(Number));
+    expect(Number.isFinite(state!.budgetRefreshedAt!)).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
+  it("ignores non-idle events", async () => {
+    stubBudgetFetch(7.89);
+    const hooks = await ActsisActiveLLMPlugin(makeInput());
+
+    await hooks.event!({ event: { type: "session.error", properties: {} } as never });
+
+    const state = await readPluginState(tmpDir);
+    expect(state?.lastBudgetSnapshot).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+
+  it("does not throw when the budget fetch fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("network down");
+    }));
+    const hooks = await ActsisActiveLLMPlugin(makeInput());
+
+    await expect(
+      hooks.event!({ event: { type: "session.idle", properties: { sessionID: "s1" } } as never }),
+    ).resolves.toBeUndefined();
+
+    const state = await readPluginState(tmpDir);
+    expect(state?.lastBudgetSnapshot).toBeUndefined();
+    vi.unstubAllGlobals();
+  });
+});
+
 
 describe("resolveClosure", () => {
   it("reads env URL over options and stored URL", async () => {
