@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import {
   loadCachedModels,
   saveCachedModels,
@@ -57,6 +57,29 @@ describe("catalog cache", () => {
     expect(loaded).toBeNull();
   });
 
+  it("writes schema version 2 and accepts it on load", async () => {
+    const models = { "gpt-4o": sampleModel("gpt-4o") };
+    await saveCachedModels(models, tmpDir);
+
+    const raw = JSON.parse(
+      await readFile(path.join(tmpDir, "models-cache.json"), "utf8"),
+    ) as { version: number };
+    expect(raw.version).toBe(2);
+    expect(await loadCachedModels(tmpDir)).toEqual(models);
+  });
+
+  it("rejects schema version 1 files written before the tiers change", async () => {
+    await writeFile(
+      path.join(tmpDir, "models-cache.json"),
+      JSON.stringify({
+        version: 1,
+        fetchedAt: Date.now(),
+        models: { "gpt-4o": sampleModel("gpt-4o") },
+      }),
+    );
+    expect(await loadCachedModels(tmpDir)).toBeNull();
+  });
+
   it("computes cache age", async () => {
     const now = Date.now();
     vi.setSystemTime(now);
@@ -79,8 +102,30 @@ describe("catalog cache", () => {
   it("returns null for missing models field", async () => {
     await writeFile(
       path.join(tmpDir, "models-cache.json"),
-      JSON.stringify({ version: 1, fetchedAt: Date.now() }),
+      JSON.stringify({ version: 2, fetchedAt: Date.now() }),
     );
     expect(await loadCachedModels(tmpDir)).toBeNull();
+  });
+
+  it("roundtrips tiered costs through the cache", async () => {
+    const model = sampleModel("gpt-4o");
+    model.cost = {
+      input: 5,
+      output: 15,
+      cache_read: 0.5,
+      cache_write: 1,
+      tiers: [
+        {
+          input: 6,
+          output: 30,
+          cache: { read: 0.5, write: 1 },
+          tier: { type: "context", size: 128_000 },
+        },
+      ],
+    };
+    const models = { "gpt-4o": model };
+
+    await saveCachedModels(models, tmpDir);
+    expect(await loadCachedModels(tmpDir)).toEqual(models);
   });
 });

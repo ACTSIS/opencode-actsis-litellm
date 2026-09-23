@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { renameSync } from "node:fs";
 import os from "node:os";
 
-const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 2;
 const DEFAULT_APP_DIR_NAME = "opencode";
 const DEFAULT_PLUGIN_DIR_NAME = "actsis-litellm";
 const CACHE_FILE_NAME = "models-cache.json";
@@ -25,6 +25,12 @@ export interface OpencodeModelConfig {
     output: number;
     cache_read?: number;
     cache_write?: number;
+    tiers?: Array<{
+      input: number;
+      output: number;
+      cache: { read: number; write: number };
+      tier: { type: "context"; size: number };
+    }>;
   };
   variants?: Record<string, { reasoningEffort: string }>;
 }

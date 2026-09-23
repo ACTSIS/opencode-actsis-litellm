@@ -1,6 +1,7 @@
 import {
   fetchModels,
   fetchModelInfo,
+  fetchModelInfoV2,
   type ModelsResponse,
 } from "./client.ts";
 import { CatalogError } from "./errors.ts";
@@ -103,6 +104,23 @@ function infoMapKey(entry: LiteLLMModelInfo): string {
   return typeof entry.id === "string" && entry.id ? entry.id : "";
 }
 
+export const V2_PAGE_SIZE = 100;
+export const V2_MAX_PAGES = 5;
+
+const TIER_SUFFIXES: Array<[number, string]> = [
+  [128_000, "128k"],
+  [200_000, "200k"],
+  [272_000, "272k"],
+  [512_000, "512k"],
+];
+
+export interface CostTier {
+  input: number;
+  output: number;
+  cache: { read: number; write: number };
+  tier: { type: "context"; size: number };
+}
+
 function perMillion(value: number | null | undefined): number {
   if (value === undefined || value === null || !Number.isFinite(value)) return 0;
   return value * 1_000_000;
@@ -149,6 +167,27 @@ export function buildInfoMap(
   return map;
 }
 
+function buildCostTiers(resolved: LiteLLMModelInfo): CostTier[] {
+  const cacheRead = perMillion(resolved.cache_read_input_token_cost);
+  const cacheWrite = perMillion(resolved.cache_creation_input_token_cost);
+  const tiers: CostTier[] = [];
+  for (const [size, suffix] of TIER_SUFFIXES) {
+    const rawInput = resolved[`input_cost_per_token_above_${suffix}_tokens`];
+    const rawOutput = resolved[`output_cost_per_token_above_${suffix}_tokens`];
+    const input = typeof rawInput === "number" && Number.isFinite(rawInput) ? rawInput : undefined;
+    const output = typeof rawOutput === "number" && Number.isFinite(rawOutput) ? rawOutput : undefined;
+    if (input === undefined && output === undefined) continue;
+    tiers.push({
+      input: input !== undefined ? input * 1_000_000 : 0,
+      output: output !== undefined ? output * 1_000_000 : 0,
+      cache: { read: cacheRead, write: cacheWrite },
+      tier: { type: "context", size },
+    });
+  }
+  tiers.sort((a, b) => a.tier.size - b.tier.size);
+  return tiers;
+}
+
 export function infoToConfig(
   id: string,
   info: LiteLLMModelInfo | undefined,
@@ -159,6 +198,8 @@ export function infoToConfig(
   const input: string[] = ["text"];
   if (resolved.supports_vision === true) input.push("image");
   const variants = buildEffortVariants(resolved.reasoning_effort_levels);
+
+  const tiers = buildCostTiers(resolved);
 
   return {
     name: id,
@@ -177,6 +218,7 @@ export function infoToConfig(
       output: perMillion(resolved.output_cost_per_token),
       cache_read: perMillion(resolved.cache_read_input_token_cost),
       cache_write: perMillion(resolved.cache_creation_input_token_cost),
+      ...(tiers.length > 0 ? { tiers } : {}),
     },
     ...(variants ? { variants } : {}),
   };
@@ -234,7 +276,7 @@ export async function fetchCatalogModels(
     fetchImpl,
   );
 
-  let infoBody: unknown;
+  let infoMap = new Map<string, LiteLLMModelInfo>();
   try {
     const infoResult = await fetchModelInfo(
       config.baseUrl,
@@ -242,11 +284,52 @@ export async function fetchCatalogModels(
       config.requestTimeoutMs,
       fetchImpl,
     );
-    infoBody = infoResult.body;
+    infoMap = buildInfoMap(infoResult.body);
   } catch {
-    // Best-effort enrichment; proceed with default costs on failure.
-    infoBody = undefined;
+    // Fall through to the paginated v2 endpoint.
   }
 
-  return mapCatalogModels(modelsResult.body as ModelsBody, infoBody);
+  if (infoMap.size === 0) {
+    try {
+      const first = await fetchModelInfoV2(
+        config.baseUrl,
+        apiKey,
+        config.requestTimeoutMs,
+        1,
+        V2_PAGE_SIZE,
+        fetchImpl,
+      );
+      const firstBody =
+        first.body !== null && typeof first.body === "object"
+          ? (first.body as Record<string, unknown>)
+          : null;
+      if (firstBody) {
+        const map = buildInfoMap(firstBody.data);
+        for (const [key, value] of map) infoMap.set(key, value);
+
+        const totalPages = positiveInt(firstBody.total_pages) ?? 1;
+        const lastPage = Math.min(totalPages, V2_MAX_PAGES);
+        for (let page = 2; page <= lastPage; page++) {
+          const result = await fetchModelInfoV2(
+            config.baseUrl,
+            apiKey,
+            config.requestTimeoutMs,
+            page,
+            V2_PAGE_SIZE,
+            fetchImpl,
+          );
+          const pageMap = buildInfoMap(
+            (result.body as Record<string, unknown> | null)?.data,
+          );
+          for (const [key, value] of pageMap) infoMap.set(key, value);
+        }
+      }
+    } catch {
+      // Best-effort enrichment; proceed with default costs on failure.
+    }
+  }
+
+  return mapCatalogModels(modelsResult.body as ModelsBody, [
+    ...infoMap.values(),
+  ]);
 }

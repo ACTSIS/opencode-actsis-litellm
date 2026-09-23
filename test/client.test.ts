@@ -8,9 +8,10 @@ import {
   revokeToken,
   fetchModels,
   fetchModelInfo,
+  fetchModelInfoV2,
   type CliAuthDiscovery,
 } from "../src/client.ts";
-import { AuthError, DiscoveryError } from "../src/errors.ts";
+import { AuthError, CatalogError, DiscoveryError } from "../src/errors.ts";
 
 function makeDiscovery(overrides?: Partial<CliAuthDiscovery>): CliAuthDiscovery {
   return {
@@ -444,5 +445,56 @@ describe("fetchModelInfo", () => {
 
     await fetchModelInfo(baseUrl, "key", 5000);
     expect(requestedUrl).toBe(`${baseUrl}/v1/model/info`);
+  });
+});
+
+describe("fetchModelInfoV2", () => {
+  const baseUrl = "https://gateway.example.com";
+
+  it("requests the paginated v2 endpoint with size and page params", async () => {
+    let requestedUrl = "";
+    let authHeader = "";
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      requestedUrl = input.toString();
+      authHeader = (init?.headers as Record<string, string>).Authorization;
+      return okResponse({ data: [], total_pages: 1 });
+    });
+
+    await fetchModelInfoV2(baseUrl, "key-1", 5000, 2, 100, fetchImpl);
+    expect(requestedUrl).toBe(`${baseUrl}/v2/model/info?size=100&page=2`);
+    expect(authHeader).toBe("Bearer key-1");
+  });
+
+  it("maps 401/403 into AuthError", async () => {
+    for (const status of [401, 403]) {
+      const fetchImpl = vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "unauthorized" }), { status }),
+      );
+      await expect(
+        fetchModelInfoV2(baseUrl, "key-1", 5000, 1, 100, fetchImpl),
+      ).rejects.toThrow("Credential rejected by gateway. Run /login again.");
+    }
+  });
+
+  it("maps non-ok responses into CatalogError with the page number", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("boom", { status: 500, statusText: "Internal Server Error" }),
+    );
+    await expect(
+      fetchModelInfoV2(baseUrl, "key-1", 5000, 3, 100, fetchImpl),
+    ).rejects.toThrow(
+      new CatalogError(
+        "Failed to fetch model info (v2 page 3): 500: Internal Server Error",
+      ),
+    );
+  });
+
+  it("maps invalid JSON into CatalogError with the page number", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(
+      new Response("{not json", { status: 200 }),
+    );
+    await expect(
+      fetchModelInfoV2(baseUrl, "key-1", 5000, 2, 100, fetchImpl),
+    ).rejects.toThrow("Model info (v2 page 2) response is not valid JSON");
   });
 });

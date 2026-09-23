@@ -140,6 +140,79 @@ describe("infoToConfig", () => {
     });
     expect(config.cost).toEqual({ input: 0, output: 0, cache_read: 0, cache_write: 0 });
   });
+
+  it("builds cost tiers above 128k/200k/272k/512k with shared cache rates", () => {
+    const config = infoToConfig("tiered-model", {
+      input_cost_per_token: 3e-6,
+      output_cost_per_token: 15e-6,
+      cache_read_input_token_cost: 0.5e-6,
+      cache_creation_input_token_cost: 1e-6,
+      input_cost_per_token_above_128k_tokens: 6e-6,
+      output_cost_per_token_above_128k_tokens: 30e-6,
+      input_cost_per_token_above_200k_tokens: 9e-6,
+      output_cost_per_token_above_200k_tokens: 45e-6,
+      input_cost_per_token_above_272k_tokens: 12e-6,
+      output_cost_per_token_above_272k_tokens: 60e-6,
+      input_cost_per_token_above_512k_tokens: 18e-6,
+      output_cost_per_token_above_512k_tokens: 90e-6,
+    });
+    expect(config.cost?.tiers).toEqual([
+      {
+        input: 6,
+        output: 30,
+        cache: { read: 0.5, write: 1 },
+        tier: { type: "context", size: 128_000 },
+      },
+      {
+        input: 9,
+        output: 45,
+        cache: { read: 0.5, write: 1 },
+        tier: { type: "context", size: 200_000 },
+      },
+      {
+        input: 12,
+        output: 60,
+        cache: { read: 0.5, write: 1 },
+        tier: { type: "context", size: 272_000 },
+      },
+      {
+        input: 18,
+        output: 90,
+        cache: { read: 0.5, write: 1 },
+        tier: { type: "context", size: 512_000 },
+      },
+    ]);
+  });
+
+  it("omits the tiers key when no tier fields are present", () => {
+    const config = infoToConfig("plain-model", {
+      input_cost_per_token: 3e-6,
+      output_cost_per_token: 15e-6,
+    });
+    expect(config.cost).not.toHaveProperty("tiers");
+  });
+
+  it("keeps a tier with only input defined, mapping output to 0", () => {
+    const config = infoToConfig("input-only-tier", {
+      input_cost_per_token_above_128k_tokens: 6e-6,
+    });
+    expect(config.cost?.tiers).toEqual([
+      {
+        input: 6,
+        output: 0,
+        cache: { read: 0, write: 0 },
+        tier: { type: "context", size: 128_000 },
+      },
+    ]);
+  });
+
+  it("treats non-finite tier costs as absent", () => {
+    const config = infoToConfig("bad-tier", {
+      input_cost_per_token_above_128k_tokens: Number.NaN,
+      output_cost_per_token_above_128k_tokens: Number.POSITIVE_INFINITY,
+    });
+    expect(config.cost).not.toHaveProperty("tiers");
+  });
 });
 
 describe("mapCatalogModels", () => {
@@ -325,7 +398,133 @@ describe("fetchCatalogModels", () => {
     expect(models[0].cost).toEqual({ input: 5, output: 15, cache_read: 0, cache_write: 0 });
   });
 
-  it("proceeds without enrichment when /model/info fails", async () => {
+  it("maps nested model_info costs with nested-wins semantics over the outer entry", () => {
+    const models = mapCatalogModels(
+      { data: [{ id: "oc/kimi-k3" }] },
+      [
+        {
+          model_name: "oc/kimi-k3",
+          input_cost_per_token: 1e-6,
+          model_info: {
+            input_cost_per_token: 4.16e-8,
+            output_cost_per_token: 1.04e-6,
+          },
+        },
+      ],
+    );
+    expect(models).toHaveLength(1);
+    expect(models[0].cost?.input).toBeCloseTo(0.0416);
+    expect(models[0].cost?.output).toBeCloseTo(1.04);
+  });
+
+  it("falls back to paginated /v2/model/info when /model/info fails", async () => {
+    const requestedUrls: string[] = [];
+    const tieredInfo = {
+      model_name: "gpt-4",
+      input_cost_per_token: 5e-6,
+      output_cost_per_token: 15e-6,
+      input_cost_per_token_above_128k_tokens: 6e-6,
+      output_cost_per_token_above_128k_tokens: 30e-6,
+      max_input_tokens: 8192,
+      max_output_tokens: 2048,
+    };
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const urlString = url.toString();
+      requestedUrls.push(urlString);
+      if (urlString.includes("/v1/models")) {
+        return new Response(
+          JSON.stringify({ data: [{ id: "gpt-4", mode: "chat" }] }),
+          { status: 200 },
+        );
+      }
+      if (urlString.includes("/v1/model/info")) {
+        return new Response("error", { status: 500 });
+      }
+      const page = Number(new URL(urlString).searchParams.get("page"));
+      if (page === 1) {
+        return new Response(
+          JSON.stringify({ data: [tieredInfo], total_pages: 3 }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          data: [
+            {
+              model_name: `other-model-${page}`,
+              input_cost_per_token: page * 1e-6,
+            },
+          ],
+        }),
+        { status: 200 },
+      );
+    });
+
+    const models = await fetchCatalogModels(
+      { baseUrl: "https://gw.example", requestTimeoutMs: 5000, catalogTtlMs: 0, providerId: "p" },
+      "sk-test",
+      undefined,
+      fetchImpl,
+    );
+
+    expect(requestedUrls.filter((u) => u.includes("/v2/model/info"))).toEqual([
+      "https://gw.example/v2/model/info?size=100&page=1",
+      "https://gw.example/v2/model/info?size=100&page=2",
+      "https://gw.example/v2/model/info?size=100&page=3",
+    ]);
+    expect(models.map((m) => m.name)).toEqual(["gpt-4"]);
+    expect(models[0].cost).toMatchObject({ input: 5, output: 15 });
+    expect(models[0].cost?.tiers).toEqual([
+      {
+        input: 6,
+        output: 30,
+        cache: { read: 0, write: 0 },
+        tier: { type: "context", size: 128_000 },
+      },
+    ]);
+  });
+
+  it("caps v2 pagination at 5 pages even with more total pages", async () => {
+    const requestedUrls: string[] = [];
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const urlString = url.toString();
+      requestedUrls.push(urlString);
+      if (urlString.includes("/v1/models")) {
+        return new Response(
+          JSON.stringify({ data: [{ id: "gpt-4", mode: "chat" }] }),
+          { status: 200 },
+        );
+      }
+      if (urlString.includes("/v1/model/info")) {
+        return new Response("[]", { status: 200 });
+      }
+      const page = Number(new URL(urlString).searchParams.get("page"));
+      return new Response(
+        JSON.stringify({
+          data: page === 1
+            ? [{ model_name: "gpt-4", input_cost_per_token: 5e-6 }]
+            : [],
+          total_pages: 12,
+        }),
+        { status: 200 },
+      );
+    });
+
+    const models = await fetchCatalogModels(
+      { baseUrl: "https://gw.example", requestTimeoutMs: 5000, catalogTtlMs: 0, providerId: "p" },
+      "sk-test",
+      undefined,
+      fetchImpl,
+    );
+
+    const v2Pages = requestedUrls
+      .filter((u) => u.includes("/v2/model/info"))
+      .map((u) => Number(new URL(u).searchParams.get("page")));
+    expect(v2Pages).toEqual([1, 2, 3, 4, 5]);
+    expect(models.map((m) => m.name)).toEqual(["gpt-4"]);
+  });
+
+  it("proceeds without enrichment when both /model/info and v2 fallback fail", async () => {
     const fetchImpl = vi.fn(async (url: string | URL | Request) => {
       const urlString = url.toString();
       if (urlString.includes("/v1/models")) {

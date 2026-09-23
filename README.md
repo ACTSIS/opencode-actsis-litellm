@@ -132,6 +132,10 @@ enriched with details from `/model/info` when available.
   `128000` and `16384` when the gateway does not report them.
 - **Cost mapping:** LiteLLM input/output/cache costs are mapped to OpenCode
   cost fields per 1 million tokens. Missing or zero values default to `0`.
+  When `/v1/model/info` fails or is empty the plugin falls back to the
+  paginated `/v2/model/info` endpoint (up to 5 pages of 100), and tiered
+  input/output pricing above 128k/200k/272k/512k tokens is surfaced as native
+  OpenCode cost tiers when the gateway reports it.
 
 ## Tools and commands
 

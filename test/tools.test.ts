@@ -87,7 +87,7 @@ describe("actsis_litellm_status", () => {
     await writeFile(
       path.join(tmpDir, "models-cache.json"),
       JSON.stringify({
-        version: 1,
+        version: 2,
         fetchedAt: Date.now(),
         models: {
           "gpt-4": { name: "gpt-4", tool_call: true, reasoning: true, limit: { context: 128000, output: 16384 }, modalities: { input: ["text"], output: ["text"] } },
@@ -264,7 +264,7 @@ describe("actsis_litellm_models", () => {
     await writeFile(
       path.join(tmpDir, "models-cache.json"),
       JSON.stringify({
-        version: 1,
+        version: 2,
         fetchedAt: Date.now(),
         models: {
           old: { name: "old", tool_call: true, reasoning: true, limit: { context: 128000, output: 16384 }, modalities: { input: ["text"], output: ["text"] } },
@@ -343,7 +343,7 @@ describe("actsis_litellm_logout", () => {
     );
     await writeFile(
       path.join(tmpDir, "models-cache.json"),
-      JSON.stringify({ version: 1, fetchedAt: Date.now(), models: {} }),
+      JSON.stringify({ version: 2, fetchedAt: Date.now(), models: {} }),
     );
   });
 

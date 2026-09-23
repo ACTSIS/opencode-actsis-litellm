@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **Tiered model pricing and paginated model-info fallback** — input/output
+  costs above 128k/200k/272k/512k context tokens from the gateway are mapped
+  to OpenCode's native `cost.tiers` (cache read/write rates shared across
+  tiers); when `GET /v1/model/info` fails or returns no entries, the plugin
+  falls back to `GET /v2/model/info` with pagination (`size=100`, up to 5
+  pages, merged by model name). Model cache schema bumped to version 2
+  (stale caches are re-synced).
+
 ### Changed
 
 - **Tools and commands renamed to the actsis-litellm namespace** —

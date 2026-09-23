@@ -611,6 +611,50 @@ export async function fetchModels(
   return { baseUrl: normalized, body };
 }
 
+export async function fetchModelInfoV2(
+  baseUrl: string,
+  apiKey: string,
+  timeoutMs: number,
+  page: number,
+  size: number,
+  fetchImpl: typeof fetch = globalThis.fetch,
+): Promise<ModelsResponse> {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  const params = new URLSearchParams();
+  params.set("size", String(size));
+  params.set("page", String(page));
+  const response = await fetchImpl(`${normalized}/v2/model/info?${params.toString()}`, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+    },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+
+  if (response.status === 401 || response.status === 403) {
+    throw new AuthError(
+      "Credential rejected by gateway. Run /login again.",
+    );
+  }
+
+  if (!response.ok) {
+    throw new CatalogError(
+      `Failed to fetch model info (v2 page ${page}): ${response.status}: ${response.statusText}`,
+    );
+  }
+
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch (err) {
+    throw new CatalogError(
+      `Model info (v2 page ${page}) response is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
+
+  return { baseUrl: normalized, body };
+}
+
 export async function fetchModelInfo(
   baseUrl: string,
   apiKey: string,
