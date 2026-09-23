@@ -29,6 +29,12 @@
   `/actsis-litellm-logout`); provider display name "ACTSIS LiteLLM" ->
   "Actsis LiteLLM" (mirrors pi-provider-litellm 052c9ca).
 
+- **Status surfaces budget failures** — `actsis_litellm_status` now reports
+  "Budget unavailable: <reason>" for gateway/network failures and a distinct
+  "Budget: Credential rejected — run /login again" line on auth rejection,
+  instead of a generic unavailable message (mirrors pi-provider-litellm
+  2296166).
+
 ### Fixed
 
 - **API key no longer requested twice during `opencode auth login`** — for the

@@ -109,7 +109,11 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
             }
           }
         } catch (err) {
-          budgetLines = [`Budget: unavailable (${err instanceof Error ? err.message : String(err)})`];
+          if (err instanceof AuthError) {
+            budgetLines = ["Budget: Credential rejected — run /login again"];
+          } else {
+            budgetLines = [`Budget unavailable: ${err instanceof Error ? err.message : String(err)}`];
+          }
         }
 
         const lines = [

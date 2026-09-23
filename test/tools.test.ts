@@ -68,6 +68,66 @@ describe("actsis_litellm_status", () => {
     expect(output).toContain("Budget: unavailable");
   });
 
+  it("reports credential rejection on auth failure from the gateway", async () => {
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({ version: 1, gatewayUrl: "https://gw.example.com" }),
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": { type: "api", key: "sk-rejected" },
+      }),
+    );
+
+    const fetchImpl = vi.fn(async () => new Response("unauthorized", { status: 401 }));
+
+    const output = await buildLitellmTools({
+      providerId: "actsis-litellm",
+      getState: async () => null,
+      timeout: 5_000,
+      input: makePluginInput(),
+      stateDir: tmpDir,
+      authPath,
+      fetchImpl,
+    }).actsis_litellm_status.execute({}, makeToolContext());
+
+    expect(output).toContain("Budget: Credential rejected — run /login again");
+  });
+
+  it("reports generic budget failure with the error reason", async () => {
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({ version: 1, gatewayUrl: "https://gw.example.com" }),
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": { type: "api", key: "sk-test" },
+      }),
+    );
+
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("network down");
+    });
+
+    const result = await buildLitellmTools({
+      providerId: "actsis-litellm",
+      getState: async () => null,
+      timeout: 5_000,
+      input: makePluginInput(),
+      stateDir: tmpDir,
+      authPath,
+      fetchImpl,
+    }).actsis_litellm_status.execute({}, makeToolContext());
+    const output = typeof result === "string" ? result : result.output;
+
+    const budgetLine = output.split("\n").find((line) => line.startsWith("Budget"));
+    expect(budgetLine).toBeDefined();
+    expect(budgetLine).toMatch(/^Budget unavailable: /);
+    expect(budgetLine).toContain("network down");
+  });
+
   it("shows oauth expiry and budget line from gateway", async () => {
     await writeFile(
       authPath,
