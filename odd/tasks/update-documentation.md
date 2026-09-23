@@ -66,8 +66,8 @@ on the **correct public install** of the plugin (server plugin + TUI widget).
 
 | Task | Status | Commit | Notes |
 |------|--------|--------|-------|
-| Writer delegation (docs drafting) | completed | see docs commit | gentle-ai-worker; 5 files changed; deviations: architecture module map also covers errors.ts + gateway-client.ts; historical 0.1.0 changelog names preserved |
+| Writer delegation (docs drafting) | completed | 06db41a (docs commit) | gentle-ai-worker; 5 files changed; deviations: architecture module map also covers errors.ts + gateway-client.ts; historical 0.1.0 changelog names preserved |
 | Installation guide + README | completed | see docs commit | docs/installation.md new (requirements, dual-config GitHub/npm/local, login walkthrough, verification checklist, troubleshooting, packaging note); README quick-start + guide link + widget section + Architecture section |
 | Technical doc (architecture.md + login-flow refresh) | completed | see docs commit | 17-module map, hooks table, stores layout, loader contract, packaging/TUI-loader contract, budget snapshot lifecycle; login-flow names fixed + post-turn snapshot subsection |
-| CHANGELOG entry + verification | completed | see docs commit | "### Documentation" under Unreleased; gentle-ai-verify: stale-names PASS, public-safe PASS, markdown PASS, links PASS, factual spot-checks PASS (6/6) |
-| RDD native review | pending | — | gentle_review inspect on the docs work-unit commit |
+| CHANGELOG entry + verification | completed | 06db41a | "### Documentation" under Unreleased; gentle-ai-verify: stale-names PASS, public-safe PASS, markdown PASS, links PASS, factual spot-checks PASS (6/6) |
+| RDD native review | pending | — | gentle_review inspect on the docs work-unit commit 06db41a |
