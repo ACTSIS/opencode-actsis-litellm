@@ -116,7 +116,7 @@ export function buildProviderInjection(
   const merged: BuiltProviderConfig = {
     npm: (existing as Partial<BuiltProviderConfig> | undefined)?.npm ?? "@ai-sdk/openai-compatible",
     name:
-      (existing as Partial<BuiltProviderConfig> | undefined)?.name ?? "ACTSIS LiteLLM",
+      (existing as Partial<BuiltProviderConfig> | undefined)?.name ?? "Actsis LiteLLM",
     options: {
       baseURL,
       apiKey: "",
@@ -137,26 +137,26 @@ export function buildProviderInjection(
 export function buildCommandTemplates(existing: Record<string, { template: string; description?: string }> | undefined): Record<string, { template: string; description: string }> {
   const commands: Record<string, { template: string; description: string }> = {};
 
-  if (!existing?.["litellm-status"]) {
-    commands["litellm-status"] = {
+  if (!existing?.["actsis-litellm-status"]) {
+    commands["actsis-litellm-status"] = {
       template:
-        "Use the litellm_status tool, then summarize its result for the user.",
+        "Use the actsis_litellm_status tool, then summarize its result for the user.",
       description: "Show LiteLLM gateway status and model cache state.",
     };
   }
 
-  if (!existing?.["litellm-models"]) {
-    commands["litellm-models"] = {
+  if (!existing?.["actsis-litellm-models"]) {
+    commands["actsis-litellm-models"] = {
       template:
-        "Use the litellm_models tool, then summarize its result for the user.",
+        "Use the actsis_litellm_models tool, then summarize its result for the user.",
       description: "Force-sync the LiteLLM model catalog and show changes.",
     };
   }
 
-  if (!existing?.["litellm-logout"]) {
-    commands["litellm-logout"] = {
+  if (!existing?.["actsis-litellm-logout"]) {
+    commands["actsis-litellm-logout"] = {
       template:
-        "Use the litellm_logout tool, then summarize its result for the user.",
+        "Use the actsis_litellm_logout tool, then summarize its result for the user.",
       description: "Revoke LiteLLM credentials and clear local state.",
     };
   }

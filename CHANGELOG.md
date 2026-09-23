@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- **Tools and commands renamed to the actsis-litellm namespace** —
+  `litellm_status` -> `actsis_litellm_status`, `litellm_models` ->
+  `actsis_litellm_models`, `litellm_logout` -> `actsis_litellm_logout`
+  (slash commands `/actsis-litellm-status`, `/actsis-litellm-models`,
+  `/actsis-litellm-logout`); provider display name "ACTSIS LiteLLM" ->
+  "Actsis LiteLLM" (mirrors pi-provider-litellm 052c9ca).
+
 ### Fixed
 
 - **API key no longer requested twice during `opencode auth login`** — for the

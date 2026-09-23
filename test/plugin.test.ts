@@ -52,7 +52,7 @@ describe("buildProviderInjection", () => {
 
     expect(config.provider?.["actsis-litellm"]).toEqual({
       npm: "@ai-sdk/openai-compatible",
-      name: "ACTSIS LiteLLM",
+      name: "Actsis LiteLLM",
       options: { baseURL: "https://gw.example.com/v1", apiKey: "" },
       models: { "gpt-4": model },
     });
@@ -103,21 +103,21 @@ describe("buildProviderInjection", () => {
 describe("buildCommandTemplates", () => {
   it("injects all three command templates when config.command is empty", () => {
     const commands = buildCommandTemplates(undefined);
-    expect(Object.keys(commands)).toEqual(["litellm-status", "litellm-models", "litellm-logout"]);
-    expect(commands["litellm-status"].template).toContain("litellm_status tool");
-    expect(commands["litellm-models"].description).toContain("Force-sync");
+    expect(Object.keys(commands)).toEqual(["actsis-litellm-status", "actsis-litellm-models", "actsis-litellm-logout"]);
+    expect(commands["actsis-litellm-status"].template).toContain("actsis_litellm_status tool");
+    expect(commands["actsis-litellm-models"].description).toContain("Force-sync");
   });
 
   it("does not overwrite user-defined commands", () => {
     const existing = {
-      "litellm-status": { template: "user template", description: "user desc" },
+      "actsis-litellm-status": { template: "user template", description: "user desc" },
       "other-command": { template: "other", description: "other" },
     };
     const commands = buildCommandTemplates(existing);
-    expect(commands["litellm-status"]).toBeUndefined();
-    expect(commands["litellm-models"]).toBeDefined();
-    expect(commands["litellm-logout"]).toBeDefined();
-    expect(existing["litellm-status"].template).toBe("user template");
+    expect(commands["actsis-litellm-status"]).toBeUndefined();
+    expect(commands["actsis-litellm-models"]).toBeDefined();
+    expect(commands["actsis-litellm-logout"]).toBeDefined();
+    expect(existing["actsis-litellm-status"].template).toBe("user template");
   });
 });
 

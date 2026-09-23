@@ -1,6 +1,6 @@
 # opencode-actsis-litellm
 
-An [OpenCode](https://opencode.ai) plugin that adds an **ACTSIS LiteLLM
+An [OpenCode](https://opencode.ai) plugin that adds an **Actsis LiteLLM
 gateway** as a dynamic model provider with OAuth2 PKCE sign-in (SSO), optional
 API-key auth, and a dynamic model catalog.
 
@@ -124,7 +124,7 @@ enriched with details from `/model/info` when available.
   otherwise.
 - **Cache location:** `~/.local/share/opencode/actsis-litellm/models-cache.json`
 - **Default TTL:** 15 minutes (`catalogTtlMinutes`)
-- **Force sync:** Use the `litellm_models` tool or the `/litellm-models`
+- **Force sync:** Use the `actsis_litellm_models` tool or the `/actsis-litellm-models`
   command.
 - **Model picker refresh:** OpenCode reads the model list at startup. After a
   catalog sync, **restart OpenCode** to see new models in the picker.
@@ -137,9 +137,9 @@ enriched with details from `/model/info` when available.
 
 | Tool | Command | Description |
 |------|---------|-------------|
-| `litellm_status` | `/litellm-status` | Show credential state, catalog cache age/count, gateway URL, and budget info. |
-| `litellm_models` | `/litellm-models` | Force a fresh model catalog sync and report added/removed models. |
-| `litellm_logout` | `/litellm-logout` | Revoke the refresh token (SSO), clear local credentials, state, and cache. |
+| `actsis_litellm_status` | `/actsis-litellm-status` | Show credential state, catalog cache age/count, gateway URL, and budget info. |
+| `actsis_litellm_models` | `/actsis-litellm-models` | Force a fresh model catalog sync and report added/removed models. |
+| `actsis_litellm_logout` | `/actsis-litellm-logout` | Revoke the refresh token (SSO), clear local credentials, state, and cache. |
 
 The commands are thin templates that instruct the agent to call the matching
 tool and summarize the result, so they work in both the TUI and server mode.
@@ -165,7 +165,7 @@ failure modes into actionable messages:
 | Provider not configured / gateway URL missing | Run `opencode auth login`, select `actsis-litellm`, and enter the gateway URL. Or set `ACTSIS_LITELLM_URL` / add `url` to the plugin options. |
 | Login timed out | The loopback callback window is 5 minutes. If the browser step took longer, run `opencode auth login` again. |
 | Refresh refused (`invalid_grant`) | The SSO refresh token expired, was rotated elsewhere, or was revoked. Log in again. |
-| Models not appearing in the picker | Run `/litellm-models` to force a sync, then restart OpenCode. Check `/litellm-status` for cache count. |
+| Models not appearing in the picker | Run `/actsis-litellm-models` to force a sync, then restart OpenCode. Check `/actsis-litellm-status` for cache count. |
 | Credential rejected by the gateway | For SSO, log in again to obtain fresh tokens. For API keys, verify the key in the gateway UI and log in again — the key is only checked by the gateway on first use, not during login. |
 
 ## Security notes

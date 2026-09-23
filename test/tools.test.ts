@@ -37,7 +37,7 @@ function makeToolContext(): import("@opencode-ai/plugin").ToolContext {
   };
 }
 
-describe("litellm_status", () => {
+describe("actsis_litellm_status", () => {
   let tmpDir: string;
   let authPath: string;
   let tools: ReturnType<typeof buildLitellmTools>;
@@ -60,7 +60,7 @@ describe("litellm_status", () => {
   });
 
   it("composes status lines with no state, auth, or cache", async () => {
-    const output = await tools.litellm_status.execute({}, makeToolContext());
+    const output = await tools.actsis_litellm_status.execute({}, makeToolContext());
     expect(output).toContain("Provider: actsis-litellm");
     expect(output).toContain("Auth: none");
     expect(output).toContain("Catalog: 0 models cached");
@@ -113,7 +113,7 @@ describe("litellm_status", () => {
       stateDir: tmpDir,
       authPath,
       fetchImpl,
-    }).litellm_status.execute({}, makeToolContext());
+    }).actsis_litellm_status.execute({}, makeToolContext());
 
     expect(output).toContain("Auth: oauth");
     expect(output).toContain("Catalog: 1 models cached");
@@ -210,7 +210,7 @@ describe("litellm_status", () => {
       stateDir: tmpDir,
       authPath,
       fetchImpl,
-    }).litellm_status.execute({}, makeToolContext());
+    }).actsis_litellm_status.execute({}, makeToolContext());
 
     expect(output).toContain(
       "Budget: $29.90 used (no budget cap) | TPM 2,000,000 | RPM 600",
@@ -229,7 +229,7 @@ describe("litellm_status", () => {
   });
 });
 
-describe("litellm_models", () => {
+describe("actsis_litellm_models", () => {
   let tmpDir: string;
   let authPath: string;
   let tools: ReturnType<typeof buildLitellmTools>;
@@ -256,7 +256,7 @@ describe("litellm_models", () => {
   });
 
   it("returns login prompt when not signed in", async () => {
-    const output = await tools.litellm_models.execute({}, makeToolContext());
+    const output = await tools.actsis_litellm_models.execute({}, makeToolContext());
     expect(output).toBe("Not signed in — run /login and choose ACTSIS LiteLLM.");
   });
 
@@ -302,7 +302,7 @@ describe("litellm_models", () => {
       stateDir: tmpDir,
       authPath,
       fetchImpl,
-    }).litellm_models.execute({}, makeToolContext());
+    }).actsis_litellm_models.execute({}, makeToolContext());
 
     expect(output).toContain("Model catalog synced: 1 models available (added 1, removed 1).");
 
@@ -311,7 +311,7 @@ describe("litellm_models", () => {
   });
 });
 
-describe("litellm_logout", () => {
+describe("actsis_litellm_logout", () => {
   let tmpDir: string;
   let authPath: string;
 
@@ -375,7 +375,7 @@ describe("litellm_logout", () => {
       fetchImpl,
     });
 
-    const output = await tools.litellm_logout.execute({}, makeToolContext());
+    const output = await tools.actsis_litellm_logout.execute({}, makeToolContext());
     expect(output).toBe("Logged out. Credentials revoked and local state cleared.");
     expect(requests).toContain("/revoke");
 

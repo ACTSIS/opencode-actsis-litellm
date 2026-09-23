@@ -56,7 +56,7 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
 
   return {
-    litellm_status: tool({
+    actsis_litellm_status: tool({
       description: "Show LiteLLM gateway status, credential state, and model cache age.",
       args: {},
       async execute(_args, _context) {
@@ -123,7 +123,7 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
       },
     }),
 
-    litellm_models: tool({
+    actsis_litellm_models: tool({
       description: "Force-sync the LiteLLM model catalog from the gateway.",
       args: {},
       async execute(_args, _context) {
@@ -168,7 +168,7 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
       },
     }),
 
-    litellm_logout: tool({
+    actsis_litellm_logout: tool({
       description: "Revoke LiteLLM credentials and clear local state.",
       args: {},
       async execute(_args, _context) {
