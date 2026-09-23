@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   fetchBudgetInfo,
+  fetchGatewayBudget,
   formatBudgetLine,
   budgetUsagePercent,
 } from "../src/budget.ts";
@@ -48,6 +49,34 @@ describe("parseBudgetResetAt via fetchBudgetInfo", () => {
 });
 
 describe("fetchBudgetInfo", () => {
+  it("maps nested key info fields", async () => {
+    const fetchImpl = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          key: "sk-hash",
+          info: {
+            spend: 12.34,
+            max_budget: 100,
+            tpm_limit: 5000,
+            rpm_limit: 1000,
+            key_alias: "prod-key",
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+
+    const info = await fetchBudgetInfo("https://gw.example", "sk-test", 5000, fetchImpl);
+    expect(info).toEqual({
+      spend: 12.34,
+      maxBudget: 100,
+      tpmLimit: 5000,
+      rpmLimit: 1000,
+      budgetResetAt: null,
+      keyAlias: "prod-key",
+    });
+  });
+
   it("maps key info fields", async () => {
     const fetchImpl = vi.fn(async () => {
       return new Response(
@@ -98,6 +127,104 @@ describe("fetchBudgetInfo", () => {
     await expect(
       fetchBudgetInfo("https://gw.example", "sk-test", 5000, fetchImpl),
     ).rejects.toThrow(CatalogError);
+  });
+});
+
+describe("fetchGatewayBudget", () => {
+  it("falls back to user info and filters key spend by user id", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/key/info") {
+        return new Response("gateway error", { status: 500 });
+      }
+      if (path === "/user/info") {
+        return new Response(
+          JSON.stringify({
+            user_id: "user-1",
+            user_info: {
+              spend: 29.9,
+              max_budget: null,
+              tpm_limit: 2_000_000,
+              rpm_limit: 600,
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (path === "/spend/keys") {
+        return new Response(
+          JSON.stringify([
+            {
+              key_alias: "RPINTO",
+              spend: 158.72,
+              max_budget: 100,
+              tpm_limit: 2_000_000,
+              rpm_limit: 600,
+              user_id: "user-1",
+            },
+            {
+              key_alias: "OTHER",
+              spend: 999,
+              max_budget: 1000,
+              user_id: "user-2",
+            },
+          ]),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const snapshot = await fetchGatewayBudget(
+      "https://gw.example",
+      "oauth-token",
+      5000,
+      fetchImpl,
+    );
+
+    expect(snapshot.source).toBe("user_info");
+    expect(snapshot.primary).toMatchObject({
+      spend: 29.9,
+      maxBudget: null,
+      tpmLimit: 2_000_000,
+      rpmLimit: 600,
+    });
+    expect(snapshot.ownKeys).toEqual([
+      expect.objectContaining({
+        keyAlias: "RPINTO",
+        spend: 158.72,
+        maxBudget: 100,
+      }),
+    ]);
+  });
+
+  it("never exposes spend keys when the caller cannot be identified", async () => {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/key/info") {
+        return new Response("gateway error", { status: 500 });
+      }
+      if (path === "/user/info") {
+        return new Response(
+          JSON.stringify({ user_info: { spend: 5 } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify([{ key_alias: "OTHER", spend: 999, user_id: "user-2" }]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+
+    const snapshot = await fetchGatewayBudget(
+      "https://gw.example",
+      "oauth-token",
+      5000,
+      fetchImpl,
+    );
+
+    expect(snapshot.primary.spend).toBe(5);
+    expect(snapshot.ownKeys).toEqual([]);
   });
 });
 
@@ -169,5 +296,19 @@ describe("formatBudgetLine", () => {
     });
     expect(line).toContain("$12.34 / $100.00 used (12%)");
     expect(line).toContain("resets");
+  });
+
+  it("appends TPM and RPM limits when present", () => {
+    const line = formatBudgetLine({
+      spend: 12.34,
+      maxBudget: 100,
+      tpmLimit: 2_000_000,
+      rpmLimit: 600,
+      budgetResetAt: null,
+      keyAlias: null,
+    });
+    expect(line).toBe(
+      "$12.34 / $100.00 used (12%) | TPM 2,000,000 | RPM 600",
+    );
   });
 });

@@ -71,6 +71,18 @@ describe("isChatModelId", () => {
 });
 
 describe("buildInfoMap", () => {
+  it("maps the v1 data envelope by model_name", () => {
+    const map = buildInfoMap({
+      data: [
+        {
+          model_name: "qwen3.6-35b",
+          model_info: { id: "opaque-deployment-id", max_input_tokens: 262144 },
+        },
+      ],
+    });
+    expect(map.get("qwen3.6-35b")?.model_info?.max_input_tokens).toBe(262144);
+  });
+
   it("maps ids to info objects, keeping first occurrence", () => {
     const map = buildInfoMap([
       { id: "a", input_cost_per_token: 1e-6 },
@@ -203,6 +215,46 @@ describe("mapCatalogModels", () => {
       modalities: { input: ["text"], output: ["text"] },
       cost: { input: 5, output: 15, cache_read: 0, cache_write: 0 },
     });
+  });
+
+  it("maps nested model_info limits, costs, vision, and reasoning capability", () => {
+    const models = mapCatalogModels(
+      { data: [{ id: "oc/kimi-k3" }] },
+      {
+        data: [
+          {
+            model_name: "oc/kimi-k3",
+            model_info: {
+              mode: "chat",
+              max_input_tokens: 262144,
+              max_output_tokens: 32768,
+              input_cost_per_token: 4.16e-8,
+              output_cost_per_token: 1.04e-6,
+              supports_vision: true,
+              reasoning_effort_levels: ["none", "minimal", "low", "medium", "high", "max"],
+            },
+          },
+        ],
+      },
+    );
+
+    expect(models).toHaveLength(1);
+    expect(models[0]).toMatchObject({
+      name: "oc/kimi-k3",
+      reasoning: true,
+      limit: { context: 262144, output: 32768 },
+      modalities: { input: ["text", "image"], output: ["text"] },
+      cost: { output: 1.04, cache_read: 0, cache_write: 0 },
+      variants: {
+        none: { reasoningEffort: "none" },
+        minimal: { reasoningEffort: "minimal" },
+        low: { reasoningEffort: "low" },
+        medium: { reasoningEffort: "medium" },
+        high: { reasoningEffort: "high" },
+        max: { reasoningEffort: "max" },
+      },
+    });
+    expect(models[0].cost?.input).toBeCloseTo(0.0416);
   });
 
   it("uses info entry mode metadata when /v1/models entry lacks mode", () => {

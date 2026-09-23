@@ -120,6 +120,113 @@ describe("litellm_status", () => {
     expect(output).toContain("Gateway URL: https://gw.example.com");
     expect(output).toContain("Budget: $1.23 / $10.00 used (12%)");
   });
+
+  it("refreshes OAuth and shows only the caller's fallback key spend", async () => {
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": {
+          type: "oauth",
+          access: "stale-access",
+          refresh: "refresh-1",
+          expires: Date.now() + 60_000,
+        },
+      }),
+    );
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({
+        version: 1,
+        gatewayUrl: "https://gw.example.com",
+        tokenEndpoint: "https://gw.example.com/token",
+        clientId: "client-1",
+        resource: "https://gw.example.com",
+      }),
+    );
+
+    const input = makePluginInput();
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/token") {
+        expect(new Headers(init?.headers).get("Content-Type")).toBe(
+          "application/x-www-form-urlencoded",
+        );
+        return new Response(
+          JSON.stringify({
+            access_token: "fresh-access",
+            refresh_token: "refresh-2",
+            expires_in: 3600,
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.pathname === "/key/info") {
+        expect(new Headers(init?.headers).get("Authorization")).toBe(
+          "Bearer fresh-access",
+        );
+        return new Response("gateway error", { status: 500 });
+      }
+      if (url.pathname === "/user/info") {
+        return new Response(
+          JSON.stringify({
+            user_id: "user-1",
+            user_info: {
+              spend: 29.9,
+              max_budget: null,
+              tpm_limit: 2_000_000,
+              rpm_limit: 600,
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.pathname === "/spend/keys") {
+        return new Response(
+          JSON.stringify([
+            {
+              key_alias: "RPINTO",
+              spend: 158.72,
+              max_budget: 100,
+              user_id: "user-1",
+            },
+            {
+              key_alias: "OTHER",
+              spend: 999,
+              max_budget: 1000,
+              user_id: "user-2",
+            },
+          ]),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const output = await buildLitellmTools({
+      providerId: "actsis-litellm",
+      getState: async () => null,
+      timeout: 5_000,
+      input,
+      stateDir: tmpDir,
+      authPath,
+      fetchImpl,
+    }).litellm_status.execute({}, makeToolContext());
+
+    expect(output).toContain(
+      "Budget: $29.90 used (no budget cap) | TPM 2,000,000 | RPM 600",
+    );
+    expect(output).toContain("Key RPINTO: $158.72 / $100.00 used (159%)");
+    expect(output).not.toContain("OTHER");
+    expect(input.client.auth.set).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: expect.objectContaining({
+          type: "oauth",
+          access: "fresh-access",
+          refresh: "refresh-2",
+        }),
+      }),
+    );
+  });
 });
 
 describe("litellm_models", () => {

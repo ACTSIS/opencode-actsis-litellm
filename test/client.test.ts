@@ -7,6 +7,7 @@ import {
   refreshGrant,
   revokeToken,
   fetchModels,
+  fetchModelInfo,
   type CliAuthDiscovery,
 } from "../src/client.ts";
 import { AuthError, DiscoveryError } from "../src/errors.ts";
@@ -429,5 +430,19 @@ describe("fetchModels", () => {
         fetchModels("https://gateway.example.com", "key-1", 5_000, fetchImpl),
       ).rejects.toThrow("Credential rejected by gateway");
     }
+  });
+});
+
+describe("fetchModelInfo", () => {
+  it("requests the v1 enrichment endpoint", async () => {
+    const baseUrl = "https://gateway.example.com";
+    let requestedUrl = "";
+    globalThis.fetch = async (input) => {
+      requestedUrl = input.toString();
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    };
+
+    await fetchModelInfo(baseUrl, "key", 5000);
+    expect(requestedUrl).toBe(`${baseUrl}/v1/model/info`);
   });
 });

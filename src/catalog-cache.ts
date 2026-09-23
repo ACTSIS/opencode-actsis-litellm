@@ -26,6 +26,7 @@ export interface OpencodeModelConfig {
     cache_read?: number;
     cache_write?: number;
   };
+  variants?: Record<string, { reasoningEffort: string }>;
 }
 
 interface CachedModelsFile {

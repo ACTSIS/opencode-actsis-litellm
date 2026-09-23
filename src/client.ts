@@ -618,7 +618,7 @@ export async function fetchModelInfo(
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<ModelsResponse> {
   const normalized = baseUrl.replace(/\/+$/, "");
-  const response = await fetchImpl(`${normalized}/model/info`, {
+  const response = await fetchImpl(`${normalized}/v1/model/info`, {
     headers: {
       Authorization: `Bearer ${apiKey}`,
     },

@@ -7,9 +7,10 @@ import {
   type OpencodeModelConfig,
 } from "./catalog-cache.ts";
 import { fetchCatalogModels } from "./catalog.ts";
-import { fetchBudgetInfo, formatBudgetLine } from "./budget.ts";
+import { fetchGatewayBudget, formatBudgetLine } from "./budget.ts";
 import { readAuthEntry, clearAuthEntry, defaultAuthPath, type AuthJsonEntry } from "./auth-store.ts";
 import { revokeToken, type CliAuthDiscovery } from "./client.ts";
+import { discoveryFromState, ensureFreshToken } from "./gateway-client.ts";
 import path from "node:path";
 import os from "node:os";
 import { rm } from "node:fs/promises";
@@ -35,21 +36,6 @@ function formatExpiry(entry: AuthJsonEntry | null): string {
   if (entry.type === "api") return "never";
   if (!Number.isFinite(entry.expires)) return "never";
   return new Date(entry.expires).toISOString();
-}
-
-function discoveryFromState(state: PluginState): CliAuthDiscovery {
-  return {
-    contractVersion: 1,
-    issuer: state.tokenEndpoint ? new URL(state.tokenEndpoint).origin : "",
-    authorizationEndpoint: state.tokenEndpoint ?? "",
-    tokenEndpoint: state.tokenEndpoint ?? "",
-    registrationEndpoint: state.tokenEndpoint ?? "",
-    revocationEndpoint: state.revocationEndpoint ?? "",
-    resource: state.resource ?? "",
-    codeChallengeMethods: ["S256"],
-    grantTypes: ["authorization_code", "refresh_token"],
-    tokenEndpointAuthMethods: ["none"],
-  };
 }
 
 export interface ToolDeps {
@@ -86,16 +72,43 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
         const authType = entry?.type ?? "none";
         const authExpiry = formatExpiry(entry);
 
-        let budgetLine = "Budget: unavailable";
+        let budgetLines = ["Budget: unavailable"];
         try {
           if (entry && state?.gatewayUrl) {
-            const token = entry.type === "oauth" ? entry.access : entry.key;
-            const info = await fetchBudgetInfo(state.gatewayUrl, token, timeout, fetchImpl);
-            const formatted = formatBudgetLine(info);
-            budgetLine = formatted ? `Budget: ${formatted}` : "Budget: unavailable";
+            const token = entry.type === "oauth"
+              ? await ensureFreshToken(
+                { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+                {
+                  state,
+                  timeoutMs: timeout,
+                  fetchImpl,
+                  onRefreshed: async (next) => {
+                    await deps.input.client.auth.set({
+                      path: { id: providerId },
+                      body: { type: "oauth", ...next },
+                    });
+                  },
+                },
+              )
+              : entry.key;
+            const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
+            const primary = formatBudgetLine(snapshot.primary);
+            if (primary) {
+              budgetLines = [`Budget: ${primary}`];
+              if (snapshot.source === "user_info") {
+                for (const key of snapshot.ownKeys) {
+                  const keyLine = formatBudgetLine(key);
+                  if (keyLine) {
+                    budgetLines.push(
+                      key.keyAlias ? `Key ${key.keyAlias}: ${keyLine}` : `Key: ${keyLine}`,
+                    );
+                  }
+                }
+              }
+            }
           }
         } catch (err) {
-          budgetLine = `Budget: unavailable (${err instanceof Error ? err.message : String(err)})`;
+          budgetLines = [`Budget: unavailable (${err instanceof Error ? err.message : String(err)})`];
         }
 
         const lines = [
@@ -103,7 +116,7 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
           `Auth: ${authType} (expires ${authExpiry})`,
           `Catalog: ${cacheCount} models cached (age ${ageText})`,
           `Gateway URL: ${gatewayUrl}`,
-          budgetLine,
+          ...budgetLines,
         ];
 
         return lines.join("\n");

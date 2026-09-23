@@ -1,4 +1,4 @@
-import { fetchCliAuthDiscovery, refreshGrant, fetchModels } from "./client.ts";
+import { fetchCliAuthDiscovery, fetchModels } from "./client.ts";
 import { runLoginFlow } from "./oauth.ts";
 import { readPluginState, updatePluginState, type PluginState } from "./state.ts";
 import {
@@ -8,12 +8,12 @@ import {
   type OpencodeModelConfig,
 } from "./catalog-cache.ts";
 import { fetchCatalogModels } from "./catalog.ts";
-import { fetchBudgetInfo, formatBudgetLine } from "./budget.ts";
 import { parseLimitError, formatBudgetWarning, formatThrottleWarning } from "./limit-errors.ts";
 import { isOverflowErrorMessage } from "./overflow.ts";
 import { readAuthEntry, clearAuthEntry, defaultAuthPath } from "./auth-store.ts";
 import { resolveConfig, normalizeBaseUrl, type PluginOptions } from "./config.ts";
 import { AuthError, ConfigError } from "./errors.ts";
+import { ensureFreshToken } from "./gateway-client.ts";
 
 import type { PluginInput, PluginOptions as OpenCodePluginOptions, Config, AuthOAuthResult } from "@opencode-ai/plugin";
 import type { Auth } from "@opencode-ai/sdk/v2";
@@ -162,32 +162,6 @@ export function buildCommandTemplates(existing: Record<string, { template: strin
   }
 
   return commands;
-}
-
-function discoveryFromState(state: PluginState): {
-  contractVersion: number;
-  issuer: string;
-  authorizationEndpoint: string;
-  tokenEndpoint: string;
-  registrationEndpoint: string;
-  revocationEndpoint: string;
-  resource: string;
-  codeChallengeMethods: string[];
-  grantTypes: string[];
-  tokenEndpointAuthMethods: string[];
-} {
-  return {
-    contractVersion: 1,
-    issuer: state.tokenEndpoint ? new URL(state.tokenEndpoint).origin : "",
-    authorizationEndpoint: state.tokenEndpoint ?? "",
-    tokenEndpoint: state.tokenEndpoint ?? "",
-    registrationEndpoint: state.tokenEndpoint ?? "",
-    revocationEndpoint: state.revocationEndpoint ?? "",
-    resource: state.resource ?? "",
-    codeChallengeMethods: ["S256"],
-    grantTypes: ["authorization_code", "refresh_token"],
-    tokenEndpointAuthMethods: ["none"],
-  };
 }
 
 async function resolveGatewayUrlForAuth(
@@ -425,35 +399,19 @@ export function buildAuthLoader(closure: PluginClosure, input: PluginInput) {
         if (cur.type !== "oauth") {
           throw new Error("Not signed in to the LiteLLM gateway — run /login");
         }
-        const expires = cur.expires;
-        const refresh = cur.refresh;
-        const state = await readPluginState(closure.stateDir);
-        if (
-          expires &&
-          expires < Date.now() + 300_000 &&
-          refresh &&
-          state?.tokenEndpoint
-        ) {
-          const refreshed = await refreshGrant(
-            discoveryFromState(state),
-            { refreshToken: refresh, clientId: state.clientId ?? "" },
-            closure.requestTimeoutMs,
-          );
-          const newAccess = refreshed.accessToken;
-          const newRefresh = refreshed.refreshToken ?? refresh;
-          const newExpires = Date.now() + Math.max(refreshed.expiresIn - 300, 60) * 1000;
-          await input.client.auth.set({
-            path: { id: closure.providerId },
-            body: {
-              type: "oauth",
-              access: newAccess,
-              refresh: newRefresh,
-              expires: newExpires,
+        return ensureFreshToken(
+          { access: cur.access, refresh: cur.refresh, expires: cur.expires },
+          {
+            state: await readPluginState(closure.stateDir),
+            timeoutMs: closure.requestTimeoutMs,
+            onRefreshed: async (next) => {
+              await input.client.auth.set({
+                path: { id: closure.providerId },
+                body: { type: "oauth", ...next },
+              });
             },
-          });
-          return newAccess;
-        }
-        return cur.access;
+          },
+        );
       };
 
       return {

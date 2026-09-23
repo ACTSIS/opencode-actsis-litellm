@@ -42,6 +42,9 @@ export function isChatModelId(
 
 interface LiteLLMModelInfo {
   id?: string;
+  key?: string;
+  model_name?: string;
+  model_info?: LiteLLMModelInfo;
   input_cost_per_token?: number | null;
   output_cost_per_token?: number | null;
   cache_read_input_token_cost?: number | null;
@@ -51,6 +54,10 @@ interface LiteLLMModelInfo {
   max_input_tokens?: number | null;
   max_output_tokens?: number | null;
   mode?: string | null;
+  supports_vision?: boolean | null;
+  supports_reasoning?: boolean | null;
+  supports_function_calling?: boolean | null;
+  reasoning_effort_levels?: unknown;
   litellm_params?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
   [key: string]: unknown;
@@ -60,19 +67,40 @@ export function extractMode(
   entry: Record<string, unknown> | LiteLLMModelInfo | undefined,
 ): string | undefined {
   if (!entry || typeof entry !== "object") return undefined;
-  const mode = entry.mode;
+  const resolved = resolveModelInfo(entry);
+  const mode = resolved.mode;
   if (typeof mode === "string" && mode) return mode;
-  const litellmParams = entry.litellm_params;
+  const litellmParams = resolved.litellm_params;
   if (litellmParams && typeof litellmParams === "object") {
     const lpMode = (litellmParams as Record<string, unknown>).mode;
     if (typeof lpMode === "string" && lpMode) return lpMode;
   }
-  const metadata = entry.metadata;
+  const metadata = resolved.metadata;
   if (metadata && typeof metadata === "object") {
     const mdMode = (metadata as Record<string, unknown>).mode;
     if (typeof mdMode === "string" && mdMode) return mdMode;
   }
   return undefined;
+}
+
+function resolveModelInfo(entry: LiteLLMModelInfo | undefined): LiteLLMModelInfo {
+  if (!entry) return {};
+  const nested = entry.model_info;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    return { ...entry, ...nested };
+  }
+  return entry;
+}
+
+function infoMapKey(entry: LiteLLMModelInfo): string {
+  if (typeof entry.model_name === "string" && entry.model_name) {
+    return entry.model_name;
+  }
+  const nested = resolveModelInfo(entry);
+  if (typeof nested.key === "string" && nested.key) {
+    return nested.key;
+  }
+  return typeof entry.id === "string" && entry.id ? entry.id : "";
 }
 
 function perMillion(value: number | null | undefined): number {
@@ -86,15 +114,33 @@ function positiveInt(value: unknown): number | undefined {
   return Math.floor(value);
 }
 
+function buildEffortVariants(
+  levels: unknown,
+): Record<string, { reasoningEffort: string }> | undefined {
+  if (!Array.isArray(levels)) return undefined;
+  const variants: Record<string, { reasoningEffort: string }> = {};
+  for (const level of levels) {
+    if (typeof level !== "string" || !level) continue;
+    variants[level] = { reasoningEffort: level };
+  }
+  return Object.keys(variants).length > 0 ? variants : undefined;
+}
+
 export function buildInfoMap(
   infoBody: unknown,
 ): Map<string, LiteLLMModelInfo> {
   const map = new Map<string, LiteLLMModelInfo>();
-  if (!Array.isArray(infoBody)) return map;
-  for (const entry of infoBody) {
+  const entries = Array.isArray(infoBody)
+    ? infoBody
+    : infoBody !== null &&
+        typeof infoBody === "object" &&
+        Array.isArray((infoBody as Record<string, unknown>).data)
+      ? ((infoBody as Record<string, unknown>).data as unknown[])
+      : [];
+  for (const entry of entries) {
     if (typeof entry !== "object" || entry === null) continue;
     const info = entry as LiteLLMModelInfo;
-    const id = typeof info.id === "string" ? info.id : "";
+    const id = infoMapKey(info);
     if (!id) continue;
     if (!map.has(id)) {
       map.set(id, info);
@@ -107,27 +153,32 @@ export function infoToConfig(
   id: string,
   info: LiteLLMModelInfo | undefined,
 ): OpencodeModelConfig {
-  const contextWindow = positiveInt(info?.max_input_tokens) ?? 128_000;
-  const maxTokens = positiveInt(info?.max_output_tokens) ?? 16_384;
+  const resolved = resolveModelInfo(info);
+  const contextWindow = positiveInt(resolved.max_input_tokens) ?? 128_000;
+  const maxTokens = positiveInt(resolved.max_output_tokens) ?? 16_384;
+  const input: string[] = ["text"];
+  if (resolved.supports_vision === true) input.push("image");
+  const variants = buildEffortVariants(resolved.reasoning_effort_levels);
 
   return {
     name: id,
-    tool_call: true,
-    reasoning: true,
+    tool_call: resolved.supports_function_calling !== false,
+    reasoning: variants !== undefined || resolved.supports_reasoning !== false,
     limit: {
       context: contextWindow,
       output: maxTokens,
     },
     modalities: {
-      input: ["text"],
+      input,
       output: ["text"],
     },
     cost: {
-      input: perMillion(info?.input_cost_per_token),
-      output: perMillion(info?.output_cost_per_token),
-      cache_read: perMillion(info?.cache_read_input_token_cost),
-      cache_write: perMillion(info?.cache_creation_input_token_cost),
+      input: perMillion(resolved.input_cost_per_token),
+      output: perMillion(resolved.output_cost_per_token),
+      cache_read: perMillion(resolved.cache_read_input_token_cost),
+      cache_write: perMillion(resolved.cache_creation_input_token_cost),
     },
+    ...(variants ? { variants } : {}),
   };
 }
 
