@@ -1,5 +1,9 @@
 # opencode-actsis-litellm
 
+<a href="https://github.com/Gentleman-Programming/gentle-ai">
+  <img width="220" src="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/docs/assets/brand/built-with-gentle-ai.png" alt="Built with Gentle-AI" />
+</a>
+
 An [OpenCode](https://opencode.ai) plugin that adds an **Actsis LiteLLM
 gateway** as a dynamic model provider with OAuth2 PKCE sign-in (SSO), optional
 API-key auth, and a dynamic model catalog.
