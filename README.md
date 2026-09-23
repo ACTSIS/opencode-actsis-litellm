@@ -158,6 +158,15 @@ persisted on `session.idle` (and after `actsis_litellm_budget` refreshes it),
 refreshing on startup and after each turn. It renders nothing when no budget
 data is available and requires a TUI build with plugin support.
 
+### Packaging note
+
+The `dist/` bundles are committed because OpenCode installs git/npm packages
+with `--ignore-scripts`; a `prepack` build step never runs. `main` and
+`exports` point at the pre-built `dist/*.js` entrypoints (`dist/index.js` for
+the server plugin, `dist/tui.js` for the TUI plugin), mirroring the entrypoint
+resolution OpenCode's TUI loader performs for npm/git packages. After changing
+`src/`, run `npm run build` and commit the regenerated `dist/` files.
+
 ## Error hardening
 
 The plugin wraps gateway chat requests and normalizes the two most common

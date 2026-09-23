@@ -49,6 +49,11 @@
 
 ### Fixed
 
+- **TUI plugin not loaded when the package is consumed from GitHub** — the
+  package now ships pre-built `dist/` bundles (`main` and `exports["./tui"]`
+  point at `dist/*.js`), matching the entrypoint resolution OpenCode's TUI
+  loader performs for npm/git packages; raw `src/*.tsx` entries were not
+  resolved.
 - **API key no longer requested twice during `opencode auth login`** — for the
   API-key method, the plugin now relies on OpenCode's native "Enter your API
   key" prompt and only declares the gateway URL prompt. The key is stored by

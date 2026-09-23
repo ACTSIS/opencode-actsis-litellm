@@ -1,5 +1,4 @@
 # Local Pi runtime state
 .atl/
 node_modules/
-dist/
 *.log

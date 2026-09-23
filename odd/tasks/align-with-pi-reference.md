@@ -107,6 +107,17 @@ Commits, one work-unit commit per work item (7 commits max); do NOT push.
 - Acceptance: typecheck + tests green; commit; smoke in opencode TUI.
 - Status: completed (commit 4b802b5).
 
+### B3. TUI plugin packaging: commit dist/ bundles (user-directed 2026-09-23)
+- tsup.config.ts: two entries (index <- src/index.ts, tui <- src/tui.tsx),
+  esm/es2022, no splitting/dts, peers external (solid-js, @opentui/core,
+  @opentui/solid, @opencode-ai/plugin), esbuild-plugin-solid with
+  { moduleName: "@opentui/solid", generate: "universal" } so JSX compiles to
+  the OpenTUI universal renderer instead of solid-js/web DOM.
+- package.json: main ./dist/index.js; exports . ./server ./tui -> dist/*.js;
+  files dist; scripts.build = tsup; devDeps tsup 8.5.1 + esbuild-plugin-solid
+  0.6.0; no prepack (OpenCode installs with --ignore-scripts).
+- Status: completed (commit 8d34edc).
+
 ## Evidence log
 
 - 2026-09-23: Task received from user; explorer subagent mapped pi reference

@@ -3,18 +3,20 @@
   "version": "0.1.0",
   "description": "OpenCode plugin that adds an ACTSIS LiteLLM gateway as a dynamic provider with OAuth2 PKCE login and dynamic model catalog.",
   "type": "module",
+  "main": "./dist/index.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./server": "./src/index.ts",
-    "./tui": "./src/tui.tsx"
+    ".": "./dist/index.js",
+    "./server": "./dist/index.js",
+    "./tui": "./dist/tui.js"
   },
   "files": [
-    "src",
+    "dist",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
   ],
   "scripts": {
+    "build": "tsup",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
@@ -31,7 +33,9 @@
     "@opentui/core": "^0.5.12",
     "@opentui/solid": "^0.5.12",
     "@types/node": "^22",
+    "esbuild-plugin-solid": "^0.6.0",
     "solid-js": "^1.9.12",
+    "tsup": "^8.5.1",
     "typescript": "^5.7",
     "vitest": "^3"
   },
