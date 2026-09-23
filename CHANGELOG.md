@@ -11,6 +11,9 @@
   falls back to `GET /v2/model/info` with pagination (`size=100`, up to 5
   pages, merged by model name). Model cache schema bumped to version 2
   (stale caches are re-synced).
+- **Budget status gauge** — `formatBudgetStatus` renders spend as an 8-cell
+  gauge (`▰` filled / `▱` empty) with percent and spend/cap, used by the
+  status and budget tools; `budgetGauge` is exported for reuse.
 
 ### Changed
 

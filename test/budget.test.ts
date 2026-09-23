@@ -3,6 +3,8 @@ import {
   fetchBudgetInfo,
   fetchGatewayBudget,
   formatBudgetLine,
+  formatBudgetStatus,
+  budgetGauge,
   budgetUsagePercent,
 } from "../src/budget.ts";
 import { AuthError, CatalogError } from "../src/errors.ts";
@@ -243,6 +245,106 @@ describe("budgetUsagePercent", () => {
 
   it("treats null spend as 0", () => {
     expect(budgetUsagePercent(null, 100)).toBe(0);
+  });
+});
+
+describe("budgetGauge", () => {
+  it("renders empty gauge at 0", () => {
+    expect(budgetGauge(0)).toBe("▱▱▱▱▱▱▱▱");
+  });
+
+  it("renders full gauge at 100", () => {
+    expect(budgetGauge(100)).toBe("▰▰▰▰▰▰▰▰");
+  });
+
+  it("renders half gauge at 50", () => {
+    expect(budgetGauge(50)).toBe("▰▰▰▰▱▱▱▱");
+  });
+
+  it("clamps negative percents to an empty gauge", () => {
+    expect(budgetGauge(-25)).toBe("▱▱▱▱▱▱▱▱");
+  });
+
+  it("clamps over-100 percents to a full gauge", () => {
+    expect(budgetGauge(159)).toBe("▰▰▰▰▰▰▰▰");
+  });
+
+  it("rounds fractional cell counts", () => {
+    // 12.5% * 8 cells = 1 cell
+    expect(budgetGauge(12.5)).toBe("▰▱▱▱▱▱▱▱");
+    // 90% * 8 cells = 7.2 -> 7 cells
+    expect(budgetGauge(90)).toBe("▰▰▰▰▰▰▰▱");
+  });
+});
+
+describe("formatBudgetStatus", () => {
+  it("returns undefined when spend is null", () => {
+    expect(
+      formatBudgetStatus({
+        spend: null,
+        maxBudget: 100,
+        tpmLimit: null,
+        rpmLimit: null,
+        budgetResetAt: null,
+        keyAlias: null,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("formats capped spend with gauge and percent", () => {
+    expect(
+      formatBudgetStatus({
+        spend: 12.34,
+        maxBudget: 100,
+        tpmLimit: null,
+        rpmLimit: null,
+        budgetResetAt: null,
+        keyAlias: null,
+      }),
+    ).toBe("Budget ▰▱▱▱▱▱▱▱ 12% · $12.34/$100.00");
+  });
+
+  it("formats uncapped spend", () => {
+    expect(
+      formatBudgetStatus({
+        spend: 5,
+        maxBudget: null,
+        tpmLimit: null,
+        rpmLimit: null,
+        budgetResetAt: null,
+        keyAlias: null,
+      }),
+    ).toBe("Budget $5.00 used (no cap)");
+  });
+
+  it("uses the uncapped form when the cap is zero or negative", () => {
+    const base = {
+      spend: 5,
+      tpmLimit: null,
+      rpmLimit: null,
+      budgetResetAt: null,
+      keyAlias: null,
+    };
+    expect(formatBudgetStatus({ ...base, maxBudget: 0 })).toBe(
+      "Budget $5.00 used (no cap)",
+    );
+    expect(formatBudgetStatus({ ...base, maxBudget: -10 })).toBe(
+      "Budget $5.00 used (no cap)",
+    );
+  });
+
+  it("rounds the percent shown in the string", () => {
+    // 15.872/100 = 15.872% -> rounds to 16%; 8 cells * 0.15872 = 1.27 -> 1 cell
+    expect(
+      formatBudgetStatus({
+        spend: 15.872,
+        maxBudget: 100,
+        tpmLimit: null,
+        rpmLimit: null,
+        budgetResetAt: null,
+        keyAlias: null,
+      }),
+    ).toBe("Budget ▰▱▱▱▱▱▱▱ 16% · $15.87/$100.00");
   });
 });
 

@@ -229,6 +229,28 @@ export function budgetUsagePercent(
   return ((spend ?? 0) / maxBudget) * 100;
 }
 
+// Gauge glyphs are rendered in TUI/terminal output.
+const GAUGE_CELLS = 8;
+const GAUGE_FILLED = "▰";
+const GAUGE_EMPTY = "▱";
+
+export function budgetGauge(percent: number): string {
+  const clamped = Math.max(0, Math.min(100, percent));
+  const filled = Math.round((clamped / 100) * GAUGE_CELLS);
+  return GAUGE_FILLED.repeat(filled) + GAUGE_EMPTY.repeat(GAUGE_CELLS - filled);
+}
+
+export function formatBudgetStatus(info: BudgetInfo): string | undefined {
+  if (info.spend === null) return undefined;
+  const spend = `$${info.spend.toFixed(2)}`;
+  if (info.maxBudget !== null && info.maxBudget > 0) {
+    const percent = budgetUsagePercent(info.spend, info.maxBudget);
+    const cap = `$${info.maxBudget.toFixed(2)}`;
+    return `Budget ${budgetGauge(percent)} ${Math.round(percent)}% · ${spend}/${cap}`;
+  }
+  return `Budget ${spend} used (no cap)`;
+}
+
 export function formatBudgetLine(info: BudgetInfo): string | null {
   if (info.spend === null) return null;
   const percent = budgetUsagePercent(info.spend, info.maxBudget);
