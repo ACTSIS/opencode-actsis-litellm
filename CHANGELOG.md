@@ -48,6 +48,11 @@
   2296166).
 
 ### Fixed
+- **Package entrypoints aligned with OpenCode's TUI loader** — `main` and
+  `exports["./tui"]` now point at the compiled `dist/tui.js` (the shape the
+  TUI loader resolves for npm/git packages), while `exports["./server"]`
+  keeps the server bundle. Public installs only need the package spec in
+  `opencode.json` (server) and `tui.json` (widget).
 
 - **TUI plugin not loaded when the package is consumed from GitHub** — the
   package now ships pre-built `dist/` bundles (`main` and `exports["./tui"]`
