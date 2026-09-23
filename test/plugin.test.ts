@@ -11,7 +11,7 @@ import {
   ActsisActiveLLMPlugin,
   resolveClosure,
 } from "../src/plugin.ts";
-import { writePluginState } from "../src/state.ts";
+import { writePluginState, readPluginState } from "../src/state.ts";
 import type { OpencodeModelConfig } from "../src/catalog-cache.ts";
 import type { createOpencodeClient } from "@opencode-ai/sdk";
 
@@ -136,7 +136,59 @@ describe("ActsisActiveLLMPlugin auth hook structure", () => {
     const api = hooks.auth!.methods.find((m) => m.type === "api")!;
     expect(api.label).toBe("Use an API key");
     const apiPrompts = api.prompts as Array<{ key: string }>;
-    expect(apiPrompts.map((p) => p.key)).toEqual(["gatewayUrl", "apiKey"]);
+    expect(apiPrompts.map((p) => p.key)).toEqual(["gatewayUrl"]);
+  });
+});
+
+describe("api method authorize", () => {
+  let stateDir: string;
+  const savedEnv: { url?: string; stateDir?: string } = {};
+
+  beforeEach(async () => {
+    stateDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-test-"));
+    savedEnv.url = process.env.ACTSIS_LITELLM_URL;
+    savedEnv.stateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+    delete process.env.ACTSIS_LITELLM_URL;
+    process.env.ACTSIS_LITELLM_STATE_DIR = stateDir;
+  });
+
+  afterEach(async () => {
+    if (savedEnv.url !== undefined) {
+      process.env.ACTSIS_LITELLM_URL = savedEnv.url;
+    } else {
+      delete process.env.ACTSIS_LITELLM_URL;
+    }
+    if (savedEnv.stateDir !== undefined) {
+      process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
+    } else {
+      delete process.env.ACTSIS_LITELLM_STATE_DIR;
+    }
+    await rm(stateDir, { recursive: true, force: true });
+  });
+
+  it("records the gateway URL and auth mode, returning success without a key", async () => {
+    const hooks = await ActsisActiveLLMPlugin(makeInput(), { url: "https://configured.example.com" });
+    const api = hooks.auth!.methods.find((m) => m.type === "api")!;
+    const authorize = api.authorize as (inputs?: Record<string, string>) => Promise<{ type: string; key?: string }>;
+
+    const result = await authorize({ gatewayUrl: "https://gw.example.com" });
+
+    expect(result.type).toBe("success");
+    expect(result).not.toHaveProperty("key");
+
+    const state = await readPluginState(stateDir);
+    expect(state?.authMode).toBe("api_key");
+    expect(state?.gatewayUrl).toBe("https://gw.example.com");
+  });
+
+  it("returns failed when no gateway URL is resolvable", async () => {
+    const hooks = await ActsisActiveLLMPlugin(makeInput());
+    const api = hooks.auth!.methods.find((m) => m.type === "api")!;
+    const authorize = api.authorize as (inputs?: Record<string, string>) => Promise<{ type: string }>;
+
+    const result = await authorize({});
+
+    expect(result.type).toBe("failed");
   });
 });
 

@@ -208,3 +208,16 @@ and request hardening — port of the pi-provider-litellm extension.
 - 2026-09-22: Worktree infra fixed (same pattern as pi project): directory
   was standalone; recreated as orphan worktree of session clone on branch
   feature/opencode-actsis-litellm; registered for session.
+- 2026-09-22 (post-publish): First real login hit a double API-key prompt.
+  Root cause verified in opencode 1.18.32 binary: for auth methods with
+  type:"api" the CLI ALWAYS shows its native "Enter your API key" prompt and
+  never passes that value into authorize(inputs); plugin prompt values only.
+  Fix: buildApiKeyMethod prompts reduced to [gatewayUrl]; authorize persists
+  gatewayUrl + authMode:"api_key" in state.json and returns success WITHOUT
+  key (CLI then stores the natively captured key); login-time key validation
+  against GET /v1/models removed (validated on first request). Files:
+  src/plugin.ts, test/plugin.test.ts, README.md, docs/login-flow.md,
+  CHANGELOG.md (Unreleased). Unrelated dirty work (budget/catalog/
+  gateway-client) untouched. npm run typecheck clean; 171/171 tests green
+  (16 in plugin.test.ts incl. 2 new authorize tests). Live retest pending:
+  user must re-run `opencode auth login` (and rotate the key pasted in chat).

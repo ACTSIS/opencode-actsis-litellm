@@ -56,8 +56,8 @@ opencode auth login
         ▼                                            │        │
 [2] Discovery        GET /.well-known/litellm-cli-auth        │
         ▼                                            │        ▼
-[2] Dynamic client registration (public, loopback)   │   Validate key
-        ▼                                            │   GET /v1/models
+[2] Dynamic client registration (public, loopback)   │   Native CLI prompt
+        ▼                                            │   "Enter your API key"
 [2] PKCE S256 + random state                         │        │
         ▼                                            │        │
 [2] OpenCode opens browser ── user signs in ─────────┘        │
@@ -77,11 +77,15 @@ opencode auth login
 
 ## API key path
 
-1. You are prompted for a LiteLLM API key (`sk-...`).
-2. The key is validated against `GET /v1/models` (401 → rejected).
-3. The plugin writes `authMode: "api_key"` into the plugin state file and
-   returns a synthetic long-lived credential so OpenCode treats it like any
-   other credential.
+1. The OpenCode CLI natively prompts "Enter your API key" and captures the
+   value itself — the key is never passed to the plugin.
+2. The plugin's `authorize` records `gatewayUrl` and `authMode: "api_key"`
+   into the plugin state file (`state.json`) and returns a success result
+   without a key.
+3. OpenCode persists the API key in `~/.local/share/opencode/auth.json`.
+
+The key is not pre-validated at login; the gateway validates it on the first
+request.
 
 ## Refresh rotation
 

@@ -62,8 +62,10 @@ opencode auth login
    - **SSO (browser)** — OAuth2 Authorization Code flow with PKCE (S256). Your
      browser opens, you sign in through your identity provider, and the gateway
      redirects back to a local loopback callback.
-   - **API key** — You paste a LiteLLM API key (`sk-...`). It is validated
-     against `GET /v1/models` before it is stored.
+   - **API key** — OpenCode itself prompts for the API key ("Enter your API
+     key") and stores it in its credential store. The plugin only asks for the
+     gateway URL when it is not already configured; the key is validated by
+     the gateway on first use (the plugin does not pre-validate it at login).
 
 Credentials are persisted by OpenCode in its own credential store; the plugin
 keeps only non-secret gateway metadata in its state file (see
@@ -109,7 +111,7 @@ Plugin options use the `[package, options]` tuple form:
 | Method | How it works |
 |--------|--------------|
 | **SSO (browser)** | OAuth2 Authorization Code + PKCE (S256). The plugin fetches `/.well-known/litellm-cli-auth` discovery metadata, performs dynamic client registration, opens the browser, and captures the redirect on a loopback-only callback server (`127.0.0.1`, ephemeral port). The callback window is **5 minutes**. Access and refresh tokens are stored by OpenCode; refresh tokens are rotated on renewal. |
-| **API key** | You paste a LiteLLM key (`sk-...`). The key is validated against `GET /v1/models` before being stored. API-key credentials never expire and are never refreshed. |
+| **API key** | OpenCode prompts natively for the API key ("Enter your API key") and stores it in its credential store. The plugin only declares the gateway URL prompt (asked when the URL is not already configured). The key is validated by the gateway on first use. API-key credentials never expire and are never refreshed. |
 
 ## Model catalog
 
@@ -164,7 +166,7 @@ failure modes into actionable messages:
 | Login timed out | The loopback callback window is 5 minutes. If the browser step took longer, run `opencode auth login` again. |
 | Refresh refused (`invalid_grant`) | The SSO refresh token expired, was rotated elsewhere, or was revoked. Log in again. |
 | Models not appearing in the picker | Run `/litellm-models` to force a sync, then restart OpenCode. Check `/litellm-status` for cache count. |
-| Credential rejected by the gateway | For SSO, log in again to obtain fresh tokens. For API keys, verify the key in the gateway UI and log in again. |
+| Credential rejected by the gateway | For SSO, log in again to obtain fresh tokens. For API keys, verify the key in the gateway UI and log in again — the key is only checked by the gateway on first use, not during login. |
 
 ## Security notes
 

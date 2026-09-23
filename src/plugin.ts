@@ -1,4 +1,4 @@
-import { fetchCliAuthDiscovery, fetchModels } from "./client.ts";
+import { fetchCliAuthDiscovery } from "./client.ts";
 import { runLoginFlow } from "./oauth.ts";
 import { readPluginState, updatePluginState, type PluginState } from "./state.ts";
 import {
@@ -12,7 +12,7 @@ import { parseLimitError, formatBudgetWarning, formatThrottleWarning } from "./l
 import { isOverflowErrorMessage } from "./overflow.ts";
 import { readAuthEntry, clearAuthEntry, defaultAuthPath } from "./auth-store.ts";
 import { resolveConfig, normalizeBaseUrl, type PluginOptions } from "./config.ts";
-import { AuthError, ConfigError } from "./errors.ts";
+import { ConfigError } from "./errors.ts";
 import { ensureFreshToken } from "./gateway-client.ts";
 
 import type { PluginInput, PluginOptions as OpenCodePluginOptions, Config, AuthOAuthResult } from "@opencode-ai/plugin";
@@ -267,42 +267,16 @@ function buildOAuthMethod(closure: PluginClosure): {
 function buildApiKeyMethod(closure: PluginClosure): {
   type: "api";
   label: string;
-  prompts: Array<ReturnType<typeof makeGatewayUrlPrompt> | { type: "text"; key: "apiKey"; message: string; validate(value: string): string | undefined }>;
-  authorize(inputs?: Record<string, string>): Promise<{ type: "success"; key: string } | { type: "failed" }>;
+  prompts: Array<ReturnType<typeof makeGatewayUrlPrompt>>;
+  authorize(inputs?: Record<string, string>): Promise<{ type: "success"; key?: string } | { type: "failed" }>;
 } {
   return {
     type: "api",
     label: "Use an API key",
-    prompts: [
-      makeGatewayUrlPrompt(closure),
-      {
-        type: "text",
-        key: "apiKey",
-        message: "LiteLLM API key (sk-...)",
-        validate(value: string): string | undefined {
-          if (!value.trim()) {
-            return "API key is required.";
-          }
-          return undefined;
-        },
-      },
-    ],
-    async authorize(inputs): Promise<{ type: "success"; key: string } | { type: "failed" }> {
+    prompts: [makeGatewayUrlPrompt(closure)],
+    async authorize(inputs): Promise<{ type: "success"; key?: string } | { type: "failed" }> {
       try {
         const baseUrl = await resolveGatewayUrlForAuth(inputs, closure);
-        const apiKey = inputs?.apiKey?.trim() ?? "";
-        if (!apiKey) {
-          return { type: "failed" };
-        }
-
-        try {
-          await fetchModels(baseUrl, apiKey, closure.requestTimeoutMs);
-        } catch (err) {
-          if (err instanceof AuthError) {
-            throw new Error("API key rejected by gateway. Verify the key and try again.");
-          }
-          throw err;
-        }
 
         await updatePluginState(
           {
@@ -317,7 +291,10 @@ function buildApiKeyMethod(closure: PluginClosure): {
           closure.stateDir,
         );
 
-        return { type: "success", key: apiKey };
+        // No `key` here: the OpenCode CLI prompts for the API key natively and
+        // persists it in its credential store. It is never passed to the
+        // plugin, and validation happens on first request.
+        return { type: "success" };
       } catch {
         return { type: "failed" };
       }

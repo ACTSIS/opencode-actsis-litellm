@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **API key no longer requested twice during `opencode auth login`** — for the
+  API-key method, the plugin now relies on OpenCode's native "Enter your API
+  key" prompt and only declares the gateway URL prompt. The key is stored by
+  OpenCode in its credential store and validated by the gateway on first use
+  (the plugin no longer pre-validates it against `GET /v1/models` at login).
+
 ## 0.1.0
 
 Initial release. OpenCode plugin that adds an ACTSIS LiteLLM gateway as a
