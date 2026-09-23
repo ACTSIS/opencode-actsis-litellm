@@ -14,6 +14,11 @@
 - **Budget status gauge** — `formatBudgetStatus` renders spend as an 8-cell
   gauge (`▰` filled / `▱` empty) with percent and spend/cap, used by the
   status and budget tools; `budgetGauge` is exported for reuse.
+- **`actsis_litellm_budget` diagnostic tool** — forces a budget refresh and
+  always reports the exact outcome: the gauge status line on success, or the
+  precise failure (no credential, gateway URL not configured, credential
+  rejected, network/timeout error) instead of a silent empty result
+  (mirrors pi-provider-litellm 0165eae).
 
 ### Changed
 

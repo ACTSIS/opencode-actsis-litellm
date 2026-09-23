@@ -229,6 +229,165 @@ describe("actsis_litellm_status", () => {
   });
 });
 
+describe("actsis_litellm_budget", () => {
+  let tmpDir: string;
+  let authPath: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-budget-test-"));
+    authPath = path.join(tmpDir, "auth.json");
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function buildBudgetTools(fetchImpl?: typeof fetch) {
+    return buildLitellmTools({
+      providerId: "actsis-litellm",
+      getState: async () => null,
+      timeout: 5_000,
+      input: makePluginInput(),
+      stateDir: tmpDir,
+      authPath,
+      fetchImpl,
+    });
+  }
+
+  it("returns the gauge line for a capped budget", async () => {
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({ version: 1, gatewayUrl: "https://gw.example.com" }),
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": { type: "api", key: "sk-test" },
+      }),
+    );
+
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: 12.34, max_budget: 100 }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const output = await buildBudgetTools(fetchImpl).actsis_litellm_budget.execute(
+      {},
+      makeToolContext(),
+    );
+    expect(output).toMatch(/Budget .*12% · \$12\.34\/\$100\.00/);
+  });
+
+  it("returns no-spend-data when spend is null", async () => {
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({ version: 1, gatewayUrl: "https://gw.example.com" }),
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": { type: "api", key: "sk-test" },
+      }),
+    );
+
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: null, max_budget: 100 }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const output = await buildBudgetTools(fetchImpl).actsis_litellm_budget.execute(
+      {},
+      makeToolContext(),
+    );
+    expect(output).toBe("no spend data (spend null)");
+  });
+
+  it("returns login prompt when no credential is stored", async () => {
+    const output = await buildBudgetTools().actsis_litellm_budget.execute(
+      {},
+      makeToolContext(),
+    );
+    expect(output).toBe("no credential stored — run /login");
+  });
+
+  it("returns gateway-not-configured when state has no gatewayUrl", async () => {
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({ version: 1 }),
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": { type: "api", key: "sk-test" },
+      }),
+    );
+
+    const output = await buildBudgetTools().actsis_litellm_budget.execute(
+      {},
+      makeToolContext(),
+    );
+    expect(output).toBe("gateway URL not configured");
+  });
+
+  it("returns the AuthError message when the gateway rejects the credential", async () => {
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({ version: 1, gatewayUrl: "https://gw.example.com" }),
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": { type: "api", key: "sk-rejected" },
+      }),
+    );
+
+    const fetchImpl = vi.fn(async () => new Response("unauthorized", { status: 401 }));
+
+    const output = await buildBudgetTools(fetchImpl).actsis_litellm_budget.execute(
+      {},
+      makeToolContext(),
+    );
+    expect(output).toBe("Credential rejected by gateway. Run /login again.");
+  });
+
+  it("returns error: <message> for other failures", async () => {
+    await writeFile(
+      path.join(tmpDir, "state.json"),
+      JSON.stringify({ version: 1, gatewayUrl: "https://gw.example.com" }),
+    );
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": { type: "api", key: "sk-test" },
+      }),
+    );
+
+    const fetchImpl = vi.fn(async () => {
+      throw new Error("network down");
+    });
+
+    const output = await buildBudgetTools(fetchImpl).actsis_litellm_budget.execute(
+      {},
+      makeToolContext(),
+    );
+    // fetchGatewayBudget swallows the /key/info failure (non-AuthError) and
+    // retries via /user/info, which surfaces the final failure reason.
+    expect(output).toBe(
+      "error: Failed to fetch user info: network down",
+    );
+  });
+});
+
 describe("actsis_litellm_models", () => {
   let tmpDir: string;
   let authPath: string;

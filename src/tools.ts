@@ -7,9 +7,10 @@ import {
   type OpencodeModelConfig,
 } from "./catalog-cache.ts";
 import { fetchCatalogModels } from "./catalog.ts";
-import { fetchGatewayBudget, formatBudgetLine } from "./budget.ts";
+import { fetchGatewayBudget, formatBudgetLine, formatBudgetStatus } from "./budget.ts";
 import { readAuthEntry, clearAuthEntry, defaultAuthPath, type AuthJsonEntry } from "./auth-store.ts";
 import { revokeToken, type CliAuthDiscovery } from "./client.ts";
+import { AuthError } from "./errors.ts";
 import { discoveryFromState, ensureFreshToken } from "./gateway-client.ts";
 import path from "node:path";
 import os from "node:os";
@@ -120,6 +121,50 @@ export function buildLitellmTools(deps: ToolDeps): Record<string, ToolDefinition
         ];
 
         return lines.join("\n");
+      },
+    }),
+
+    actsis_litellm_budget: tool({
+      description: "Force a budget refresh and report the exact outcome.",
+      args: {},
+      async execute(_args, _context) {
+        const state = await readPluginState(stateDir);
+        const entry = await readAuthEntry(authPath, providerId);
+
+        if (!state || !entry) {
+          return "no credential stored — run /login";
+        }
+        if (!state.gatewayUrl) {
+          return "gateway URL not configured";
+        }
+
+        try {
+          const token = entry.type === "oauth"
+            ? await ensureFreshToken(
+              { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+              {
+                state,
+                timeoutMs: timeout,
+                fetchImpl,
+                onRefreshed: async (next) => {
+                  await deps.input.client.auth.set({
+                    path: { id: providerId },
+                    body: { type: "oauth", ...next },
+                  });
+                },
+              },
+            )
+            : entry.key;
+          const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
+          const text = formatBudgetStatus(snapshot.primary);
+          return text ?? "no spend data (spend null)";
+        } catch (err) {
+          if (err instanceof AuthError) {
+            return err.message;
+          }
+          const reason = err instanceof Error ? err.message : String(err);
+          return `error: ${reason}`;
+        }
       },
     }),
 
