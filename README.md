@@ -149,6 +149,15 @@ enriched with details from `/model/info` when available.
 The commands are thin templates that instruct the agent to call the matching
 tool and summarize the result, so they work in both the TUI and server mode.
 
+## TUI widget
+
+An optional TUI widget renders the budget gauge in the OpenCode sidebar
+footer. Enable it by adding the package (or a local path) to the `plugin`
+array of `~/.config/opencode/tui.json`. The widget reads the snapshot
+persisted on `session.idle` (and after `actsis_litellm_budget` refreshes it),
+refreshing on startup and after each turn. It renders nothing when no budget
+data is available and requires a TUI build with plugin support.
+
 ## Error hardening
 
 The plugin wraps gateway chat requests and normalizes the two most common

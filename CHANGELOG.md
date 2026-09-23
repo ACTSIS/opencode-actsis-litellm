@@ -27,6 +27,10 @@
 - **`/actsis-litellm-budget` slash command** — runs the
   `actsis_litellm_budget` tool and summarizes the outcome from the prompt
   bar (mirrors pi-provider-litellm's `actsis-litellm:budget` command).
+- **TUI budget widget (`./tui` entrypoint)** — optional OpenCode TUI slot
+  plugin (`src/tui.tsx`, id `actsis-litellm-budget`) rendering the budget
+  gauge in the sidebar footer from the persisted snapshot, refreshed on
+  `session.idle`; enable by listing the package in `tui.json`.
 
 ### Changed
 

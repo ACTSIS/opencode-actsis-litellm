@@ -79,6 +79,34 @@ Commits, one work-unit commit per work item (7 commits max); do NOT push.
 - npm run typecheck clean; npm test green (all suites).
 - Report: commit list, test totals, deviations with reasons.
 
+### B1. Slash command /actsis-litellm-budget (user-approved 2026-09-23)
+- buildCommandTemplates: add actsis-litellm-budget command whose template
+  invokes the actsis_litellm_budget tool and summarizes the result; do not
+  overwrite user-defined commands. Tests: four-command keys; README table
+  row; CHANGELOG entry.
+- Acceptance: typecheck + tests green; commit.
+
+### B2. TUI budget widget (user-approved 2026-09-23, explore-first done)
+- Explored: TUI plugins load from tui.json (separate file), module shape
+  default export {id, tui} target-exclusive, slots sidebar_footer/
+  session_prompt_right typed {session_id}, Solid reactivity +
+  api.event.on("session.idle") + direct fs access all verified against
+  installed plugins and binary (exploration task mue9e5fv-9-gbdw).
+- src/tui.tsx: module { id: "actsis-litellm-budget", tui } registering
+  sidebar_footer; pure helper budgetWidgetLine(state, now) -> line|null in
+  new src/budget-widget.ts (no cycles: type-only imports); reads plugin
+  state (defaultPluginDir honors XDG_DATA_HOME); renders
+  formatBudgetStatus output with age; hidden when no snapshot; refresh on
+  startup + session.idle with ~2s debounce (server hook writes first).
+- package.json: exports["./tui"] -> ./src/tui.tsx; peerDeps @opentui/core,
+  @opentui/solid, solid-js; matching devDeps for typecheck; tsconfig adds
+  src/**/*.tsx + jsx settings (jsxImportSource @opentui/solid).
+- Tests: budgetWidgetLine pure cases (fresh, stale, no snapshot, uncapped,
+  null spend); JSX covered by typecheck + manual smoke.
+- Config: user adds entry to ~/.config/opencode/tui.json (manual step).
+- Acceptance: typecheck + tests green; commit; smoke in opencode TUI.
+- Status: completed (commit pending).
+
 ## Evidence log
 
 - 2026-09-23: Task received from user; explorer subagent mapped pi reference
