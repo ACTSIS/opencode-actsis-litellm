@@ -102,23 +102,27 @@ describe("buildProviderInjection", () => {
 });
 
 describe("buildCommandTemplates", () => {
-  it("injects all three command templates when config.command is empty", () => {
+  it("injects all four command templates when config.command is empty", () => {
     const commands = buildCommandTemplates(undefined);
-    expect(Object.keys(commands)).toEqual(["actsis-litellm-status", "actsis-litellm-models", "actsis-litellm-logout"]);
+    expect(Object.keys(commands)).toEqual(["actsis-litellm-status", "actsis-litellm-models", "actsis-litellm-budget", "actsis-litellm-logout"]);
     expect(commands["actsis-litellm-status"].template).toContain("actsis_litellm_status tool");
     expect(commands["actsis-litellm-models"].description).toContain("Force-sync");
+    expect(commands["actsis-litellm-budget"].template).toContain("actsis_litellm_budget tool");
   });
 
   it("does not overwrite user-defined commands", () => {
     const existing = {
       "actsis-litellm-status": { template: "user template", description: "user desc" },
+      "actsis-litellm-budget": { template: "user budget template", description: "user budget desc" },
       "other-command": { template: "other", description: "other" },
     };
     const commands = buildCommandTemplates(existing);
     expect(commands["actsis-litellm-status"]).toBeUndefined();
+    expect(commands["actsis-litellm-budget"]).toBeUndefined();
     expect(commands["actsis-litellm-models"]).toBeDefined();
     expect(commands["actsis-litellm-logout"]).toBeDefined();
     expect(existing["actsis-litellm-status"].template).toBe("user template");
+    expect(existing["actsis-litellm-budget"].template).toBe("user budget template");
   });
 });
 

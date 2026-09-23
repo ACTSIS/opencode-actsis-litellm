@@ -144,7 +144,7 @@ enriched with details from `/model/info` when available.
 | `actsis_litellm_status` | `/actsis-litellm-status` | Show credential state, catalog cache age/count, gateway URL, and budget info (falls back to the last cached snapshot between turns). |
 | `actsis_litellm_models` | `/actsis-litellm-models` | Force a fresh model catalog sync and report added/removed models. |
 | `actsis_litellm_logout` | `/actsis-litellm-logout` | Revoke the refresh token (SSO), clear local credentials, state, and cache. |
-| `actsis_litellm_budget` | — | Force a budget refresh and report the exact outcome (gauge line or precise failure reason, plus the last known snapshot when the live fetch fails). |
+| `actsis_litellm_budget` | `/actsis-litellm-budget` | Force a budget refresh and report the exact outcome (gauge line or precise failure reason, plus the last known snapshot when the live fetch fails). |
 
 The commands are thin templates that instruct the agent to call the matching
 tool and summarize the result, so they work in both the TUI and server mode.

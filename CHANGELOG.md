@@ -24,6 +24,9 @@
   and persists it with a timestamp in plugin state; `actsis_litellm_status`
   and `actsis_litellm_budget` report the last known line (with age) when a
   live fetch fails.
+- **`/actsis-litellm-budget` slash command** — runs the
+  `actsis_litellm_budget` tool and summarizes the outcome from the prompt
+  bar (mirrors pi-provider-litellm's `actsis-litellm:budget` command).
 
 ### Changed
 

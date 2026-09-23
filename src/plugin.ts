@@ -155,6 +155,14 @@ export function buildCommandTemplates(existing: Record<string, { template: strin
     };
   }
 
+  if (!existing?.["actsis-litellm-budget"]) {
+    commands["actsis-litellm-budget"] = {
+      template:
+        "Use the actsis_litellm_budget tool, then summarize its result for the user.",
+      description: "Force a budget refresh and report the exact outcome.",
+    };
+  }
+
   if (!existing?.["actsis-litellm-logout"]) {
     commands["actsis-litellm-logout"] = {
       template:
