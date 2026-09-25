@@ -15,20 +15,26 @@ catalog at runtime, and routes chat requests through the OpenAI-compatible
 
 ## Quick start
 
-Add the GitHub spec to **both** OpenCode configuration files (the server
-plugin and the TUI budget widget are registered separately):
+Add the named GitHub spec to **both** OpenCode configuration files (the
+server plugin and the TUI budget widget are registered separately):
 
 ```json
 // ~/.config/opencode/opencode.json (server plugin)
 {
-  "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
+  "plugin": ["opencode-actsis-litellm@github:ACTSIS/opencode-actsis-litellm"]
 }
 
 // ~/.config/opencode/tui.json (budget widget)
 {
-  "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
+  "plugin": ["opencode-actsis-litellm@github:ACTSIS/opencode-actsis-litellm"]
 }
 ```
+
+Use the `name@github:owner/repo` form shown above, not the bare
+`github:ACTSIS/opencode-actsis-litellm` / `git:github.com/...` shorthands:
+OpenCode cannot derive the package name from a bare git spec, so it misses
+its install cache and re-runs the git install on every start (see
+[docs/installation.md](docs/installation.md#why-the-named-spec)).
 
 Then run `opencode auth login`, select `actsis-litellm`, and follow the
 prompts. See **[docs/installation.md](docs/installation.md)** for the full
@@ -77,7 +83,7 @@ Plugin options use the `[package, options]` tuple form:
 ```json
 {
   "plugin": [
-    "git:github.com/ACTSIS/opencode-actsis-litellm",
+    "opencode-actsis-litellm@github:ACTSIS/opencode-actsis-litellm",
     {
       "url": "https://your-gateway.example.com",
       "providerId": "actsis-litellm",
@@ -158,11 +164,15 @@ wins the race. It renders nothing when no budget data is available.
 ### Packaging note
 
 The `dist/` bundles are committed because OpenCode installs git/npm packages
-with `--ignore-scripts`; a `prepack` build step never runs. `main` and
+with `--ignore-scripts`; a `prepack` build step never runs. The build script
+is deliberately named `bundle` (not `build`): npm's git-dependency fetcher
+runs a full `npm install` of the clone whenever `package.json` declares a
+`build`/`prepare`/`prepack`/`install` script, which fails on machines without
+`npm` on the `PATH`. `main` and
 `exports` point at the pre-built `dist/*.js` entrypoints (`dist/index.js` for
 the server plugin, `dist/tui.js` for the TUI plugin), mirroring the entrypoint
 resolution OpenCode's TUI loader performs for npm/git packages. After changing
-`src/`, run `npm run build` and commit the regenerated `dist/` files.
+`src/`, run `npm run bundle` and commit the regenerated `dist/` files.
 
 ## Architecture
 

@@ -17,9 +17,11 @@ when configuring.
   embedded in OpenCode. Peer packages such as `@opentui/core`,
   `@opentui/solid`, and `solid-js` are only needed for **building the plugin
   from source** (they are dev dependencies); end users installing from GitHub
-  or npm do not install anything by hand.
+  or npm do not install anything by hand. They are declared as **optional**
+  peers so the installer does not download them (the OpenCode TUI supplies
+  its own `solid-js` / `@opentui/*` runtime to plugins).
 
-## Recommended install: GitHub spec
+## Recommended install: named GitHub spec
 
 Add the package spec to **both** OpenCode configuration files:
 
@@ -28,7 +30,7 @@ Add the package spec to **both** OpenCode configuration files:
 
    ```json
    {
-     "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
+     "plugin": ["opencode-actsis-litellm@github:ACTSIS/opencode-actsis-litellm"]
    }
    ```
 
@@ -37,12 +39,37 @@ Add the package spec to **both** OpenCode configuration files:
 
    ```json
    {
-     "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
+     "plugin": ["opencode-actsis-litellm@github:ACTSIS/opencode-actsis-litellm"]
    }
    ```
 
-The `git:github.com/ACTSIS/opencode-actsis-litellm` shorthand is also
-accepted in both files.
+To pin a release, append a tag or commit:
+`opencode-actsis-litellm@github:ACTSIS/opencode-actsis-litellm#<tag-or-commit>`. Pinning is recommended: changing the pin is also
+how you upgrade (see [Updating](#updating)).
+
+### Why the named spec
+
+Do **not** use the bare `github:ACTSIS/opencode-actsis-litellm` or
+`git:github.com/ACTSIS/opencode-actsis-litellm` shorthands. OpenCode installs
+plugins with npm's Arborist into
+`~/.cache/opencode/packages/<spec>/` and, on every start, checks whether
+`node_modules/<package-name>` already exists there. A bare git spec carries
+no package name, so that check never matches and OpenCode re-runs the git
+install (network + `git ls-remote`) on **every** start, in both the server
+and the TUI process. Offline or rate-limited, the plugin fails to load. The
+`opencode-actsis-litellm@github:...` form gives the name up front, so the
+cached install is reused.
+
+### Updating
+
+With a pinned spec, change the `#<tag-or-commit>` in both files and restart
+OpenCode: a new spec means a new cache directory and a fresh install. With
+an unpinned spec the first install is cached indefinitely; to force an
+update, delete the cache directory and restart:
+
+```sh
+rm -rf ~/.cache/opencode/packages/opencode-actsis-litellm@github*
+```
 
 > **Dual-config requirement:** the `plugin` array lives in two different
 > files with two different roles. `opencode.json` alone gives you the
@@ -128,7 +155,9 @@ After installing and logging in, verify each item:
 
 | Symptom | What to do |
 |---------|------------|
-| **Provider missing from `opencode auth login`** | The plugin cache may be empty after a failed or partial install. Re-install the plugin (both config files) and restart OpenCode so it re-registers. |
+| **Provider missing from `opencode auth login`** | The plugin cache may be empty after a failed or partial install. Delete `~/.cache/opencode/packages/<spec>/` and restart OpenCode so it re-installs and re-registers. |
+| **Install fails with `git dep preparation failed`** | You are on a plugin revision older than the `bundle` script rename: npm's git fetcher ran `npm install` on the clone because `package.json` declared a `build` script, and `npm` was not on the `PATH`. Pin a newer revision (or install Node.js/npm), delete the cache directory, and restart. |
+| **Plugin re-installs on every start / fails offline** | You are using a bare `github:` / `git:` spec. Switch to `opencode-actsis-litellm@github:ACTSIS/opencode-actsis-litellm` (see [Why the named spec](#why-the-named-spec)). |
 | **Budget widget not rendering** | Verify the `tui.json` entry exists. The widget requires a TUI build with plugin support. For a file-plugin fallback (local checkout), OpenCode's TUI loader needs an absolute path whose module default-exports `{ id, tui }` from the compiled bundle (`main` -> `dist/tui.js`); raw `src/*.tsx` entries are not resolved. |
 | **Models missing from the picker** | Run `/actsis-litellm-models` to force a sync, check `/actsis-litellm-status` for the cache model count, then **restart OpenCode** (the picker is refreshed at startup). |
 | **Login times out** | The SSO loopback callback window is 5 minutes. If the browser step took longer, run `opencode auth login` again. |
@@ -138,9 +167,15 @@ After installing and logging in, verify each item:
 ## Packaging note: why `dist/` is committed
 
 OpenCode installs npm/git packages with `--ignore-scripts`, so a `prepack`
-build step **never runs** on the user's machine. To make installs work
+build step **never runs** on the user's machine. Worse, for git specs npm's
+fetcher (pacote) runs a full `npm install` of the cloned repository whenever
+`package.json` declares any of `build`, `prepare`, `prepack`, `preinstall`,
+`install` or `postinstall` — independently of `--ignore-scripts`. That pulls
+every dev dependency and requires `npm` on the `PATH`; without it the
+install aborts with `git dep preparation failed`. The build script is
+therefore named `bundle`, and none of those script names may be added. To make installs work
 without any build step, the compiled `dist/` bundles are **committed to the
-repository** and regenerated whenever `src/` changes (`npm run build`, then
+repository** and regenerated whenever `src/` changes (`npm run bundle`, then
 commit the new `dist/`).
 
 The TUI loader resolves npm/git packages only through the package entrypoint
@@ -159,5 +194,5 @@ object-form `exports`:
 ```
 
 Raw `src/*.tsx` entrypoints are skipped silently by the loader. If you build
-from source, run `npm run build` and commit the regenerated `dist/` files
+from source, run `npm run bundle` and commit the regenerated `dist/` files
 before installing from a local path.

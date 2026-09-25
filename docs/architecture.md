@@ -91,8 +91,11 @@ request:
 
 OpenCode installs npm/git packages with `--ignore-scripts`, so the compiled
 `dist/` bundles are **committed to the repository**; a `prepack` build never
-runs on the user's machine. After changing `src/`, run `npm run build` and
-commit the regenerated `dist/`.
+runs on the user's machine. After changing `src/`, run `npm run bundle` and
+commit the regenerated `dist/`. The script must not be called `build`
+(nor `prepare`/`prepack`/`install`/...): npm's git fetcher runs a full
+`npm install` of the clone when any of those exist, which fails without
+`npm` on the `PATH`.
 
 The TUI loader resolves npm/git packages only through the entrypoint
 contract:
@@ -108,7 +111,10 @@ The universal transform (esbuild-plugin-solid, `{ moduleName:
 "@opentui/solid", generate: "universal" }`) compiles the Solid JSX for both
 server and TUI targets, which is why a single committed bundle serves both
 entrypoints. Peer packages `@opentui/core`, `@opentui/solid`, and `solid-js`
-are needed only for building from source (devDependencies).
+are needed only for building from source (devDependencies) and are marked
+optional in `peerDependenciesMeta`, so the installer skips them (~80 MB,
+including native `@opentui/core-*` binaries); at runtime the OpenCode TUI
+redirects those imports to its own copies.
 
 ## Budget snapshot lifecycle
 

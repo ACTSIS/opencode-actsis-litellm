@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Git installs no longer require `npm` and no longer half-install** — the
+  `build` script is renamed to `bundle`. npm's git-dependency fetcher
+  (pacote, used by OpenCode's Arborist installer) runs a full `npm install`
+  of the cloned repo whenever `package.json` declares a `build`/`prepare`/
+  `prepack`/`install` script, even with `--ignore-scripts`; without `npm` on
+  the `PATH` the install aborted with `git dep preparation failed`.
+- **Leaner install** — `@opentui/core`, `@opentui/solid` and `solid-js` are
+  now optional peers (`peerDependenciesMeta`), so the installer no longer
+  downloads them (install size 143 MB -> 63 MB, no native `@opentui`
+  binaries). The OpenCode TUI provides its own copies at runtime.
+- **Docs: recommended spec is now
+  `opencode-actsis-litellm@github:ACTSIS/opencode-actsis-litellm`** — the
+  bare `github:` / `git:` shorthands carry no package name, so OpenCode's
+  install cache never matches and it re-installs on every start. Added
+  pinning/updating instructions and troubleshooting rows.
+
 ### Documentation
 
 - **New installation guide** (`docs/installation.md`) — authoritative
