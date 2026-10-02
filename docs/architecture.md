@@ -138,7 +138,10 @@ caché; si no, catálogo cacheado.
 OpenCode instala los paquetes de npm/git con `--ignore-scripts`, por lo que
 los bundles compilados de `dist/` están **commiteados en el repositorio**;
 un build de `prepack` nunca corre en la máquina del usuario. Tras cambiar
-`src/`, ejecuta `npm run build` y commitea los `dist/` regenerados.
+`src/`, ejecuta `npm run bundle` y commitea los `dist/` regenerados. No
+renombres el script a `build` (ni `prepare`/`prepack`/`install`): el fetcher
+de git de npm correría un `npm install` completo del clon y fallaría en
+máquinas sin `npm` en el `PATH`.
 
 El resolver de OpenCode v2 se comporta distinto para paquetes vs directorios
 locales:

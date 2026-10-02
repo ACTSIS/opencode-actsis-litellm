@@ -147,6 +147,7 @@ Tras instalar e iniciar sesión, verifica cada ítem:
 |---------|-----------|
 | **El proveedor no aparece en `opencode auth login`** | El caché de plugins puede haber quedado vacío tras una instalación fallida o parcial. Reinstala el plugin (ambos archivos de configuración) y reinicia OpenCode para que se registre de nuevo. |
 | **El widget de budget no renderiza** | Verifica que exista la entrada en `cli.json`. El widget requiere una compilación de la TUI con soporte de plugins. Para un plugin de directorio local, el loader de la TUI de OpenCode v2 resuelve `<dir>/tui.js` (shim raíz que re-exporta `dist/tui.js`, un `Plugin.define({ id, setup })` v2); las entradas `src/*.tsx` crudas no se resuelven. Los paquetes npm/git se resuelven por `main`/`exports`. |
+| **La instalación falla con `git dep preparation failed`** | El fetcher de git de npm corrió un `npm install` del clon porque el `package.json` de esa revisión declara un script `build`/`prepare`/`prepack`/`install`. Actualiza el pin a una revisión posterior (o instala Node.js/npm), borra el directorio de caché del paquete y reinicia OpenCode. |
 | **Modelos ausentes en el selector** | Ejecuta `/actsis-litellm-models` para forzar la sincronización, revisa el conteo de modelos del caché con `/actsis-litellm-status`, y **reinicia OpenCode** (el selector se refresca al arrancar). |
 | **El login expira** | La ventana del callback loopback de SSO es de 5 minutos. Si el paso del navegador tomó más tiempo, ejecuta `opencode auth login` de nuevo. |
 | **Refresh rechazado (`invalid_grant`)** | El refresh token de SSO expiró, fue rotado en otro lugar o fue revocado. Inicia sesión de nuevo con `opencode auth login`. |
@@ -158,7 +159,7 @@ OpenCode instala paquetes de npm/git con `--ignore-scripts`, por lo que un
 paso de build `prepack` **nunca se ejecuta** en la máquina del usuario. Para
 que las instalaciones funcionen sin ningún paso de build, los bundles
 compilados de `dist/` están **commiteados en el repositorio** y se
-regeneran cada vez que cambia `src/` (`npm run build` y commit de los nuevos
+regeneran cada vez que cambia `src/` (`npm run bundle` y commit de los nuevos
 `dist/`).
 
 V2 resuelve los paquetes instalados de forma distinta según el mecanismo de
@@ -186,5 +187,5 @@ instalación:
   `dist/tui.js` respectivamente.
 
 Las entradas crudas `src/*.ts`/`src/*.tsx` se omiten silenciosamente por el
-loader. Si compilas desde el código fuente, ejecuta `npm run build` y
+loader. Si compilas desde el código fuente, ejecuta `npm run bundle` y
 commitea los `dist/` regenerados antes de instalar desde una ruta local.
