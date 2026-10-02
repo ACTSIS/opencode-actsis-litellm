@@ -176,7 +176,15 @@ bundles compilados (`dist/index.js` y `dist/tui.js`): el resolver de OpenCode
 v2 para directorios locales solo prueba `<dir>/index` y `<dir>/tui` e ignora
 el `package.json`. Los paquetes instalados por npm/git se resuelven en cambio
 por los campos `main`/`exports`. Tras modificar `src/`, ejecuta
-`npm run build` y commitea los `dist/` regenerados.
+`npm run bundle` y commitea los `dist/` regenerados.
+
+> **Por qué el script se llama `bundle` y no `build`:** al instalar desde un
+> spec de git, el fetcher de npm (pacote) ejecuta un `npm install` completo
+> del clon si el `package.json` declara un script `build` (o `prepare`,
+> `prepack`, `preinstall`, `install`, `postinstall`) — incluso con
+> `--ignore-scripts`. Si `npm` no está en el `PATH` de la máquina del
+> usuario, la instalación falla con `git dep preparation failed`. Ninguno de
+> esos nombres de script debe agregarse a este paquete.
 
 ## Arquitectura
 

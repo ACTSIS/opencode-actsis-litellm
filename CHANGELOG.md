@@ -73,6 +73,20 @@
 
 ## Unreleased
 
+### Corregido
+
+- **Las instalaciones por spec de git ya no requieren `npm` ni fallan a
+  mitad de instalación** — el script de build se renombra a `bundle`. El
+  fetcher de dependencias git de npm (pacote, usado por el instalador
+  Arborist de OpenCode) ejecuta un `npm install` completo del clon cuando el
+  `package.json` declara un script `build`/`prepare`/`prepack`/`install`,
+  incluso con `--ignore-scripts`; sin `npm` en el `PATH` la instalación
+  abortaba con `git dep preparation failed`.
+- **Instalación más liviana** — `@opentui/core`, `@opentui/solid` y
+  `solid-js` son ahora peers opcionales (`peerDependenciesMeta`), así el
+  instalador deja de descargarlos (sin los binarios nativos de
+  `@opentui`); la TUI de OpenCode provee sus propias copias en runtime.
+
 ### Documentación
 
 - **Nueva guía de instalación** (`docs/installation.md`) — referencia
