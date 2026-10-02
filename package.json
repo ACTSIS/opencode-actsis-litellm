@@ -62,6 +62,6 @@
   "license": "MIT",
   "types": "./src/index.ts",
   "dependencies": {
-    "@opencode/plugin": "^2.0.4"
+    "@opencode/plugin": "^2.0.22"
   }
 }
