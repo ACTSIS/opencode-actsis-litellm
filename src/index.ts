@@ -1,25 +1,29 @@
-import pluginFactory, { ActsisActiveLLMPlugin as ActsisActiveLLMPluginFactory } from "./plugin.ts";
-import { buildLitellmTools } from "./tools.ts";
-import type { PluginInput, PluginOptions, Hooks, ToolDefinition } from "@opencode-ai/plugin";
-
 /**
- * OpenCode plugin factory for the ACTSIS LiteLLM gateway.
+ * OpenCode v2 server plugin for the ACTSIS LiteLLM gateway.
  *
- * Re-exported as the named `server` entry because OpenCode's community
- * plugin loader expects `PluginModule.server`. The default export is the
- * same factory and supports local-directory loading.
+ * The default export is the `Plugin.define(...)` registration that v2's
+ * plugin host loads. `./tui` exposes the separate CLI (TUI) plugin for the
+ * sidebar budget widget.
  */
-export async function ActsisActiveLLMPlugin(input: PluginInput, options?: PluginOptions): Promise<Hooks> {
-  const hooks = await ActsisActiveLLMPluginFactory(input, options);
-  const tools = buildLitellmTools({
-    providerId: hooks.provider?.id ?? "actsis-litellm",
-    getState: async () => null, // not used; tools read state directly
-    timeout: 30_000,
-    input,
-  });
-  hooks.tool = tools as Record<string, ToolDefinition>;
-  return hooks as Hooks;
-}
+export { default } from "./plugin.ts";
 
-export { ActsisActiveLLMPlugin as server };
-export default ActsisActiveLLMPlugin;
+/** Provider/integration ID used by both the server plugin and the tools. */
+export { DEFAULT_PROVIDER_ID } from "./plugin.ts";
+
+export {
+  resolveClosure,
+  buildProviderInfo,
+  mapModelConfigToInfo,
+  buildCommandDefinitions,
+  buildApiKeyMethodRegistration,
+  buildOAuthMethodRegistration,
+  buildAuthMethodRegistrations,
+  buildInitialModels,
+  normalizeThinkingOption,
+  makeAuthFetch,
+  runBudgetRefresh,
+} from "./plugin.ts";
+
+export { buildLitellmToolInfos, resolveToolToken, type ToolDeps, type ToolInfo } from "./tools.ts";
+
+export type { PluginClosure, SetupContext } from "./plugin.ts";

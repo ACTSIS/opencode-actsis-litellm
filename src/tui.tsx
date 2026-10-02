@@ -1,5 +1,7 @@
 /** @jsxImportSource @opentui/solid */
-import type { TuiPlugin, TuiPluginModule } from "@opencode-ai/plugin/tui";
+import { Plugin } from "@opencode/plugin/tui";
+import type { Context } from "@opencode/plugin/tui/plugin";
+import type { SlotClaim } from "@opencode/plugin/tui/context";
 import { createSignal } from "solid-js";
 import {
   budgetWidgetLine,
@@ -9,59 +11,54 @@ import {
 
 const IDLE_REFRESH_DEBOUNCE_MS = 2000;
 
-const tui: TuiPlugin = async (api, _options, _meta) => {
-  let data: BudgetWidgetData | null = null;
-  try {
-    data = await readBudgetWidgetData();
-  } catch {
-    data = null;
-  }
-  const [line, setLine] = createSignal<string | null>(
-    data ? budgetWidgetLine(data, Date.now()) : null,
-  );
-
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-
-  const refresh = async () => {
+export default Plugin.define({
+  id: "actsis-litellm-budget",
+  async setup(context: Context) {
+    let data: BudgetWidgetData | null = null;
     try {
-      const next = await readBudgetWidgetData();
-      setLine(next ? budgetWidgetLine(next, Date.now()) : null);
+      data = await readBudgetWidgetData();
     } catch {
-      setLine(null);
+      data = null;
     }
-  };
+    const [line, setLine] = createSignal<string | null>(
+      data ? budgetWidgetLine(data, Date.now()) : null,
+    );
 
-  api.slots.register({
-    order: 80,
-    slots: {
-      sidebar_footer(_ctx, _props) {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+
+    const refresh = async () => {
+      try {
+        const next = await readBudgetWidgetData();
+        setLine(next ? budgetWidgetLine(next, Date.now()) : null);
+      } catch {
+        setLine(null);
+      }
+    };
+
+    context.ui.slot({
+      append: "sidebar.footer",
+      render: (_input: { sessionID: string } & Record<string, never>) => {
         return line() ? (
           <box>
             <text>{line()}</text>
           </box>
         ) : null;
       },
-    },
-  });
+    } as SlotClaim);
 
-  // The server plugin persists a fresh snapshot on the same "session.idle"
-  // event; debounce so the server-side write wins the race before we re-read.
-  const unsubIdle = api.event.on("session.idle", () => {
-    timeout = setTimeout(() => void refresh(), IDLE_REFRESH_DEBOUNCE_MS);
-  });
+    // The server plugin persists a fresh snapshot on the same "session.idle"
+    // event; debounce so the server-side write wins the race before we re-read.
+    const unsubIdle = context.data.on("session.idle", () => {
+      if (timeout !== undefined) clearTimeout(timeout);
+      timeout = setTimeout(() => void refresh(), IDLE_REFRESH_DEBOUNCE_MS);
+    });
 
-  // Covers TUI restarts with an existing snapshot on disk.
-  void refresh();
+    // Covers TUI restarts with an existing snapshot on disk.
+    void refresh();
 
-  api.lifecycle.onDispose(() => {
-    unsubIdle();
-    if (timeout !== undefined) clearTimeout(timeout);
-  });
-};
-
-const plugin: TuiPluginModule & { id: string } = {
-  id: "actsis-litellm-budget",
-  tui,
-};
-
-export default plugin;
+    return () => {
+      unsubIdle();
+      if (timeout !== undefined) clearTimeout(timeout);
+    };
+  },
+});
