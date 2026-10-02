@@ -13,8 +13,9 @@ function makeToolContext(): ToolContext {
     messageID: "msg-1" as ToolContext["messageID"],
     agent: "agent-1" as ToolContext["agent"],
     id: "call-1" as ToolContext["id"],
+    signal: new AbortController().signal,
     progress: async () => {},
-  };
+  } as unknown as ToolContext;
 }
 
 describe("buildLitellmToolInfos", () => {
