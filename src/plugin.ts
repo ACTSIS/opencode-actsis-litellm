@@ -1,6 +1,11 @@
-import { fetchCliAuthDiscovery } from "./client.ts";
+import { Plugin, Credential, Provider as ProviderSchema, Model as ModelSchema } from "@opencode/plugin";
+import { Form } from "@opencode/schema/form";
+import { Integration as IntegrationSchema } from "@opencode/schema/integration";
+import {
+  fetchCliAuthDiscovery,
+} from "./client.ts";
 import { runLoginFlow } from "./oauth.ts";
-import { readPluginState, updatePluginState, type PluginState } from "./state.ts";
+import { readPluginState, updatePluginState } from "./state.ts";
 import {
   loadCachedModels,
   saveCachedModels,
@@ -10,22 +15,20 @@ import {
 import { fetchCatalogModels } from "./catalog.ts";
 import { parseLimitError, formatBudgetWarning, formatThrottleWarning } from "./limit-errors.ts";
 import { isOverflowErrorMessage } from "./overflow.ts";
-import { readAuthEntry, clearAuthEntry, defaultAuthPath } from "./auth-store.ts";
-import { resolveConfig, normalizeBaseUrl, type PluginOptions } from "./config.ts";
+import { readAuthEntry, defaultAuthPath, type AuthJsonEntry } from "./auth-store.ts";
+import type { StructuralCredential } from "./tools.ts";
+import { normalizeBaseUrl, type PluginOptions } from "./config.ts";
 import { ConfigError } from "./errors.ts";
 import { ensureFreshToken } from "./gateway-client.ts";
 import { fetchGatewayBudget } from "./budget.ts";
-
-import type { PluginInput, PluginOptions as OpenCodePluginOptions, Config, AuthOAuthResult } from "@opencode-ai/plugin";
-import type { Event } from "@opencode-ai/sdk";
-import type { Auth } from "@opencode-ai/sdk/v2";
-import type { Provider as ProviderV2, Model as ModelV2 } from "@opencode-ai/sdk/v2/types";
-
-type OpenCodeConfig = Config;
+import { buildLitellmToolInfos, type ToolDeps } from "./tools.ts";
 
 const DEFAULT_PROVIDER_ID = "actsis-litellm";
+export { DEFAULT_PROVIDER_ID };
 const DEFAULT_CATALOG_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_PROVIDER_NAME = "Actsis LiteLLM";
+const OPENAI_COMPATIBLE_PACKAGE = "@opencode/ai/providers/openai-compatible";
 
 export interface PluginClosure {
   baseUrl: string | null;
@@ -36,16 +39,46 @@ export interface PluginClosure {
   stateDir: string | undefined;
 }
 
-function normalizeOptions(options?: OpenCodePluginOptions): PluginOptions {
+/**
+ * Structural view of a v2 integration credential, matching `Credential.Value`
+ * ({type:"oauth", methodID, refresh, access, expires, metadata?} |
+ * {type:"key", key, metadata?, configuration?}). Kept structural so the
+ * plugin's setup context and tests never import OpenCode runtime internals.
+ */
+export type CredentialValue = StructuralCredential & {
+  methodID?: string;
+  metadata?: Record<string, unknown>;
+  configuration?: Record<string, string | number | boolean | string[]>;
+};
+
+/**
+ * Wire the v2 integration credential reader: resolve the active connection
+ * for the integration and yield its credential (`ctx.integration.connection
+ * .active(id)` + `resolve(conn)`). Returns null when there is no active
+ * connection or no resolvable credential — the v1 auth.json fallback still
+ * applies downstream.
+ */
+export function makeCredentialReader(
+  ctx: SetupContext,
+  providerId: string,
+): () => Promise<CredentialValue | null> {
+  return async () => {
+    const conn = await ctx.integration.connection.active(providerId);
+    if (!conn) return null;
+    const cred = await ctx.integration.connection.resolve(conn);
+    return (cred ?? null) as CredentialValue | null;
+  };
+}
+
+function normalizeRawOptions(options?: Record<string, unknown>): PluginOptions {
   if (!options || typeof options !== "object") {
     return {};
   }
-  const record = options as Record<string, unknown>;
   return {
-    url: typeof record.url === "string" ? record.url : undefined,
-    providerId: typeof record.providerId === "string" ? record.providerId : undefined,
-    catalogTtlMinutes: typeof record.catalogTtlMinutes === "number" ? record.catalogTtlMinutes : undefined,
-    requestTimeoutMs: typeof record.requestTimeoutMs === "number" ? record.requestTimeoutMs : undefined,
+    url: typeof options.url === "string" ? options.url : undefined,
+    providerId: typeof options.providerId === "string" ? options.providerId : undefined,
+    catalogTtlMinutes: typeof options.catalogTtlMinutes === "number" ? options.catalogTtlMinutes : undefined,
+    requestTimeoutMs: typeof options.requestTimeoutMs === "number" ? options.requestTimeoutMs : undefined,
   };
 }
 
@@ -54,13 +87,16 @@ function resolveProviderId(options?: PluginOptions): string {
   return id || DEFAULT_PROVIDER_ID;
 }
 
+function resolveStateDir(): string | undefined {
+  return process.env.ACTSIS_LITELLM_STATE_DIR;
+}
+
 export async function resolveClosure(
-  input: PluginInput,
-  options?: OpenCodePluginOptions,
+  options?: Record<string, unknown>,
   authPath: string = defaultAuthPath(),
-  stateDir?: string,
+  stateDir: string | undefined = resolveStateDir(),
 ): Promise<PluginClosure> {
-  const pluginOptions = normalizeOptions(options);
+  const pluginOptions = normalizeRawOptions(options);
   const providerId = resolveProviderId(pluginOptions);
 
   const envUrl = process.env.ACTSIS_LITELLM_URL?.trim();
@@ -94,222 +130,137 @@ export async function resolveClosure(
   };
 }
 
-export interface BuiltProviderConfig {
-  npm: string;
+/**
+ * Build the v2 Provider.Info for the gateway, bound to the integration whose
+ * credentials supply the bearer token / API key.
+ */
+export function buildProviderInfo(closure: PluginClosure) {
+  return {
+    ...ProviderSchema.Info.empty(closure.providerId as ProviderSchema.ID),
+    name: DEFAULT_PROVIDER_NAME,
+    activation: "enabled" as const,
+    package: OPENAI_COMPATIBLE_PACKAGE,
+    settings: {
+      baseURL: closure.baseUrl ? `${closure.baseUrl}/v1` : "",
+    },
+    integrationID: closure.providerId,
+  };
+}
+
+/**
+ * Map one catalog entry onto a v2 Model.Info: start from Model.Info.default
+ * and override with gateway-reported catalog values.
+ */
+export function mapModelConfigToInfo(
+  providerId: string,
+  modelId: string,
+  config: OpencodeModelConfig,
+): ModelSchema.Info {
+  const info = {
+    ...ModelSchema.Info.default(
+      providerId as ProviderSchema.ID,
+      modelId as ModelSchema.ID,
+    ),
+  } as Record<string, unknown>;
+  // Model.Info.default() returns a frozen object; copy it before overriding
+  // so Immer's frozen-object invariant is never violated.
+  info.name = config.name || modelId;
+  info.limit = {
+    context: config.limit.context,
+    output: config.limit.output,
+  };
+  info.capabilities = {
+    tools: config.tool_call,
+    input: config.modalities.input,
+    output: config.modalities.output,
+  };
+
+  const tierCosts = config.cost?.tiers ?? [];
+  const costs: Array<Record<string, unknown>> = [
+    {
+      input: config.cost?.input ?? 0,
+      output: config.cost?.output ?? 0,
+      cache: {
+        read: config.cost?.cache_read ?? 0,
+        write: config.cost?.cache_write ?? 0,
+      },
+    },
+  ];
+  for (const tier of tierCosts) {
+    costs.push({
+      tier: { type: "context", size: tier.tier.size },
+      input: tier.input,
+      output: tier.output,
+      cache: {
+        read: tier.cache.read,
+        write: tier.cache.write,
+      },
+    });
+  }
+  info.cost = costs;
+
+  const variants = Object.entries(config.variants ?? {}).map(([id, variant]) => ({
+    id,
+    settings: { reasoningEffort: (variant as { reasoningEffort: string }).reasoningEffort },
+  }));
+  info.variants = variants;
+
+  return info as unknown as ModelSchema.Info;
+}
+
+export interface CommandDefinition {
   name: string;
-  options: {
-    baseURL: string;
-    apiKey: string;
-  };
-  models: Record<string, OpencodeModelConfig>;
+  description: string;
+  template: string;
 }
 
-export function buildProviderInjection(
-  config: OpenCodeConfig,
-  params: {
-    providerId: string;
-    baseUrl: string | null;
-    models: Record<string, OpencodeModelConfig>;
-  },
-): void {
-  const existing = config.provider?.[params.providerId];
-  const baseURL = params.baseUrl ? `${params.baseUrl}/v1` : "";
-
-  const merged: BuiltProviderConfig = {
-    npm: (existing as Partial<BuiltProviderConfig> | undefined)?.npm ?? "@ai-sdk/openai-compatible",
-    name:
-      (existing as Partial<BuiltProviderConfig> | undefined)?.name ?? "Actsis LiteLLM",
-    options: {
-      baseURL,
-      apiKey: "",
-      ...(existing as Partial<BuiltProviderConfig> | undefined)?.options,
-    },
-    models: {
-      ...((existing as Partial<BuiltProviderConfig> | undefined)?.models ?? {}),
-      ...params.models,
-    },
-  };
-
-  if (!config.provider) {
-    config.provider = {};
-  }
-  config.provider[params.providerId] = merged as unknown as NonNullable<OpenCodeConfig["provider"]>[string];
-}
-
-export function buildCommandTemplates(existing: Record<string, { template: string; description?: string }> | undefined): Record<string, { template: string; description: string }> {
-  const commands: Record<string, { template: string; description: string }> = {};
-
-  if (!existing?.["actsis-litellm-status"]) {
-    commands["actsis-litellm-status"] = {
-      template:
-        "Use the actsis_litellm_status tool, then summarize its result for the user.",
+export function buildCommandDefinitions(existing?: Array<{ name: string }>): CommandDefinition[] {
+  const defined = new Set(existing?.map((c) => c.name) ?? []);
+  const all: CommandDefinition[] = [
+    {
+      name: "actsis-litellm-status",
       description: "Show LiteLLM gateway status and model cache state.",
-    };
-  }
-
-  if (!existing?.["actsis-litellm-models"]) {
-    commands["actsis-litellm-models"] = {
-      template:
-        "Use the actsis_litellm_models tool, then summarize its result for the user.",
+      template: "Use the actsis_litellm_status tool, then summarize its result for the user.",
+    },
+    {
+      name: "actsis-litellm-models",
       description: "Force-sync the LiteLLM model catalog and show changes.",
-    };
-  }
-
-  if (!existing?.["actsis-litellm-budget"]) {
-    commands["actsis-litellm-budget"] = {
-      template:
-        "Use the actsis_litellm_budget tool, then summarize its result for the user.",
+      template: "Use the actsis_litellm_models tool, then summarize its result for the user.",
+    },
+    {
+      name: "actsis-litellm-budget",
       description: "Force a budget refresh and report the exact outcome.",
-    };
-  }
-
-  if (!existing?.["actsis-litellm-logout"]) {
-    commands["actsis-litellm-logout"] = {
-      template:
-        "Use the actsis_litellm_logout tool, then summarize its result for the user.",
+      template: "Use the actsis_litellm_budget tool, then summarize its result for the user.",
+    },
+    {
+      name: "actsis-litellm-logout",
       description: "Revoke LiteLLM credentials and clear local state.",
-    };
-  }
-
-  return commands;
-}
-
-async function resolveGatewayUrlForAuth(
-  inputs: Record<string, string> | undefined,
-  closure: PluginClosure,
-): Promise<string> {
-  const fromInput = inputs?.gatewayUrl?.trim();
-  if (fromInput) {
-    return normalizeBaseUrl(fromInput);
-  }
-  if (closure.baseUrl) {
-    return closure.baseUrl;
-  }
-  throw new ConfigError("Gateway URL not configured. Provide it during login or set ACTSIS_LITELLM_URL / plugin options.");
-}
-
-function makeGatewayUrlPrompt(closure: PluginClosure) {
-  return {
-    type: "text" as const,
-    key: "gatewayUrl",
-    message: "Gateway base URL (press Enter to use the configured one)",
-    placeholder: "https://your-gateway.example.com",
-    validate(value: string): string | undefined {
-      const trimmed = value.trim();
-      if (!trimmed) {
-        if (closure.baseUrl) return undefined;
-        return "Gateway URL is required.";
-      }
-      try {
-        const url = new URL(trimmed);
-        if (url.protocol !== "http:" && url.protocol !== "https:") {
-          return "Gateway URL must use http:// or https://.";
-        }
-      } catch {
-        return "Gateway URL is not a valid URL.";
-      }
-      return undefined;
+      template: "Use the actsis_litellm_logout tool, then summarize its result for the user.",
     },
-  };
+  ];
+  return all.filter((command) => !defined.has(command.name));
 }
 
-function buildOAuthMethod(closure: PluginClosure): {
-  type: "oauth";
-  label: string;
-  prompts: ReturnType<typeof makeGatewayUrlPrompt>[];
-  authorize(inputs?: Record<string, string>): Promise<AuthOAuthResult>;
-} {
-  return {
-    type: "oauth",
-    label: "Sign in with SSO (browser)",
-    prompts: [makeGatewayUrlPrompt(closure)],
-    async authorize(inputs): Promise<AuthOAuthResult> {
-      const baseUrl = await resolveGatewayUrlForAuth(inputs, closure);
-
-      let schemeUpgraded = false;
-      const discovery = await fetchCliAuthDiscovery(
-        baseUrl,
-        closure.requestTimeoutMs,
-        () => {
-          schemeUpgraded = true;
-        },
-      );
-
-      const flow = await runLoginFlow(
-        { requestTimeoutMs: closure.requestTimeoutMs },
-        discovery,
-        { schemeUpgraded },
-      );
-
-      const originalCallback = flow.callback;
-      const wrappedCallback = async () => {
-        try {
-          const result = await originalCallback();
-          if (result.type === "success") {
-            await updatePluginState(
-              {
-                gatewayUrl: baseUrl,
-                providerId: closure.providerId,
-                authMode: "oauth",
-                clientId: discovery.issuer,
-                tokenEndpoint: discovery.tokenEndpoint,
-                revocationEndpoint: discovery.revocationEndpoint,
-                resource: discovery.resource,
-                schemeUpgraded,
-              },
-              closure.stateDir,
-            );
-          }
-          return result;
-        } catch {
-          return { type: "failed" } as const;
-        }
-      };
-
-      return {
-        ...flow,
-        callback: wrappedCallback,
-      };
-    },
-  };
-}
-
-function buildApiKeyMethod(closure: PluginClosure): {
-  type: "api";
-  label: string;
-  prompts: Array<ReturnType<typeof makeGatewayUrlPrompt>>;
-  authorize(inputs?: Record<string, string>): Promise<{ type: "success"; key?: string } | { type: "failed" }>;
-} {
-  return {
-    type: "api",
-    label: "Use an API key",
-    prompts: [makeGatewayUrlPrompt(closure)],
-    async authorize(inputs): Promise<{ type: "success"; key?: string } | { type: "failed" }> {
-      try {
-        const baseUrl = await resolveGatewayUrlForAuth(inputs, closure);
-
-        await updatePluginState(
-          {
-            gatewayUrl: baseUrl,
-            providerId: closure.providerId,
-            authMode: "api_key",
-            clientId: undefined,
-            tokenEndpoint: undefined,
-            revocationEndpoint: undefined,
-            resource: undefined,
-          },
-          closure.stateDir,
-        );
-
-        // No `key` here: the OpenCode CLI prompts for the API key natively and
-        // persists it in its credential store. It is never passed to the
-        // plugin, and validation happens on first request.
-        return { type: "success" };
-      } catch {
-        return { type: "failed" };
-      }
-    },
-  };
+/**
+ * Normalize v1-style `thinking` option values into v2 provider options:
+ * string values and unknown object types are mapped onto the canonical
+ * `{ type: "disabled" | "adaptive" }` shape.
+ */
+export function normalizeThinkingOption(options: Record<string, unknown>): void {
+  const thinking = options.thinking;
+  if (typeof thinking === "string") {
+    const lower = thinking.toLowerCase();
+    options.thinking = lower === "off" || lower === "disabled"
+      ? { type: "disabled" }
+      : { type: "adaptive" };
+    return;
+  }
+  if (typeof thinking === "object" && thinking !== null) {
+    const type = (thinking as { type?: unknown }).type;
+    if (type !== "disabled" && type !== "adaptive") {
+      options.thinking = { type: "adaptive" };
+    }
+  }
 }
 
 export function makeAuthFetch(
@@ -330,7 +281,7 @@ export function makeAuthFetch(
     if (!response.ok) {
       const text = await response.clone().text().catch(() => "");
       const lower = text.toLowerCase();
-      if (isOverflowErrorMessage(text)) {
+      if (isOverflowErrorMessage(text) || lower.includes("context_length_exceeded")) {
         throw new Error(`context_length_exceeded: ${text.slice(0, 300)}`);
       }
       const info = parseLimitError(text);
@@ -350,97 +301,272 @@ export function makeAuthFetch(
   };
 }
 
-export function buildAuthLoader(closure: PluginClosure, input: PluginInput) {
-  return async function authLoader(
-    getAuth: () => Promise<Auth>,
-  ): Promise<Record<string, unknown>> {
-    // Precedence: env > options URL (closure.baseUrl) > state file. The
-    // closure already resolved that order; the state file only breaks ties
-    // for a providerId mismatch so the login-time URL wins after login.
-    const state = await readPluginState(closure.stateDir);
-    const baseUrl =
-      closure.baseUrl ??
-      (state?.gatewayUrl && closure.providerId === state.providerId
-        ? normalizeBaseUrl(state.gatewayUrl)
-        : null);
-    const baseURL = baseUrl ? `${baseUrl}/v1` : "";
-
-    let current: Auth;
-    try {
-      current = await getAuth();
-    } catch {
-      return {};
-    }
-
-    if (current.type === "api") {
-      return {
-        apiKey: current.key,
-        baseURL,
-        fetch: makeAuthFetch(() => Promise.resolve(current.key)),
-      };
-    }
-
-    if (current.type === "oauth") {
-      const tokenProvider = async (): Promise<string> => {
-        const cur = await getAuth();
-        if (cur.type !== "oauth") {
-          throw new Error("Not signed in to the LiteLLM gateway — run /login");
-        }
-        return ensureFreshToken(
-          { access: cur.access, refresh: cur.refresh, expires: cur.expires },
-          {
-            state: await readPluginState(closure.stateDir),
-            timeoutMs: closure.requestTimeoutMs,
-            onRefreshed: async (next) => {
-              await input.client.auth.set({
-                path: { id: closure.providerId },
-                body: { type: "oauth", ...next },
-              });
-            },
-          },
-        );
-      };
-
-      return {
-        apiKey: "",
-        baseURL,
-        fetch: makeAuthFetch(tokenProvider),
-      };
-    }
-
-    return {};
+function gatewayUrlField(): Form.Fields[number] {
+  return {
+    type: "string",
+    key: "gatewayUrl",
+    title: "Gateway base URL",
+    description: "ACTSIS LiteLLM gateway base URL (https://...). Press Enter to use the configured one.",
+    placeholder: "https://your-gateway.example.com",
+    required: true,
+    format: "uri",
   };
 }
 
-export function buildProviderModels(closure: PluginClosure) {
-  return async function providerModels(
-    _provider: ProviderV2,
-    ctx: { auth?: Auth },
-  ): Promise<Record<string, ModelV2>> {
-    let token: string | undefined;
-    if (ctx.auth?.type === "oauth") {
-      token = ctx.auth.access;
-    } else if (ctx.auth?.type === "api") {
-      token = ctx.auth.key;
-    }
+async function resolveGatewayUrlForAuth(
+  answer: Record<string, unknown> | undefined,
+  closure: PluginClosure,
+): Promise<string> {
+  const fromAnswer = typeof answer?.gatewayUrl === "string" ? answer.gatewayUrl.trim() : "";
+  if (fromAnswer) {
+    return normalizeBaseUrl(fromAnswer);
+  }
+  if (closure.baseUrl) {
+    return closure.baseUrl;
+  }
+  throw new ConfigError(
+    "Gateway URL not configured. Provide it during login or set ACTSIS_LITELLM_URL / plugin options.",
+  );
+}
 
-    const state = await readPluginState(closure.stateDir);
-    // Same precedence as buildAuthLoader: env > options URL > state file.
-    const baseUrl = closure.baseUrl ??
-      (state?.gatewayUrl ? normalizeBaseUrl(state.gatewayUrl) : null);
+/**
+ * Register the two auth methods for the integration: OAuth SSO (browser)
+ * and the native API key flow. In v2, OpenCode manages credential storage;
+ * we only supply discovery, login flow, and token refresh.
+ */
+export function buildApiKeyMethodRegistration(closure: PluginClosure) {
+  return {
+    integrationID: closure.providerId,
+    method: {
+      type: "key" as const,
+      label: "Use an API key",
+      form: [gatewayUrlField()],
+    },
+  };
+}
 
-    const cached = await loadCachedModels(closure.stateDir);
-    if (cached && Object.keys(cached).length > 0) {
-      const age = await computeCacheAge(closure.stateDir);
-      if (age !== null && age < closure.catalogTtlMs) {
-        return cached as unknown as Record<string, ModelV2>;
+export function buildOAuthMethodRegistration(closure: PluginClosure) {
+  return buildAuthMethodRegistrations(closure).oauth;
+}
+
+/**
+ * Register the two auth methods for the integration: OAuth SSO (browser)
+ * and the native API key flow. In v2, OpenCode manages credential storage;
+ * we only supply discovery, login flow, and token refresh.
+ */
+const OAUTH_METHOD_ID = "sso-browser";
+const OAUTH_METHOD_BRANDED_ID = OAUTH_METHOD_ID as IntegrationSchema.MethodID;
+
+export function buildAuthMethodRegistrations(closure: PluginClosure) {
+  const oauth: {
+    integrationID: string;
+    method: {
+      id: string;
+      type: "oauth";
+      label: string;
+      form: Form.Fields;
+    };
+    authorize: (answer: Form.Answer) => Promise<{
+      url: string;
+      instructions: string;
+      mode: "auto";
+      callback: Promise<Credential.OAuth>;
+    }>;
+    refresh: (credential: Credential.OAuth) => Promise<Credential.OAuth>;
+    label?: (credential: Credential.OAuth) => string | undefined;
+  } = {
+    integrationID: closure.providerId,
+    method: {
+      id: OAUTH_METHOD_ID,
+      type: "oauth",
+      label: "Sign in with SSO (browser)",
+      form: [gatewayUrlField()],
+    },
+    async authorize(answer) {
+      const baseUrl = await resolveGatewayUrlForAuth(
+        answer as Record<string, unknown> | undefined,
+        closure,
+      );
+
+      let schemeUpgraded = false;
+      const discovery = await fetchCliAuthDiscovery(
+        baseUrl,
+        closure.requestTimeoutMs,
+        () => {
+          schemeUpgraded = true;
+        },
+      );
+
+      const flow = await runLoginFlow(
+        { requestTimeoutMs: closure.requestTimeoutMs, stateDir: closure.stateDir },
+        discovery,
+        { schemeUpgraded },
+      );
+
+      const authorization = {
+        url: flow.url,
+        instructions: flow.instructions,
+        mode: "auto" as const,
+        callback: (async (): Promise<Credential.OAuth> => {
+          const result = await flow.callback();
+          if (result.type !== "success") {
+            throw new ConfigError("SSO login did not complete. Run the login flow again.");
+          }
+          await updatePluginState(
+            {
+              gatewayUrl: baseUrl,
+              providerId: closure.providerId,
+              authMode: "oauth",
+              clientId: discovery.issuer,
+              tokenEndpoint: discovery.tokenEndpoint,
+              revocationEndpoint: discovery.revocationEndpoint,
+              resource: discovery.resource,
+              schemeUpgraded,
+            },
+            closure.stateDir,
+          );
+          return {
+            type: "oauth" as const,
+            methodID: OAUTH_METHOD_BRANDED_ID,
+            refresh: result.refresh,
+            access: result.access,
+            expires: result.expires,
+            metadata: {
+              userId: result.userId,
+              teamId: result.teamId,
+            },
+          };
+        })(),
+      };
+
+      return authorization;
+    },
+    async refresh(credential) {
+      const next = await ensureFreshToken(
+        { access: credential.access, refresh: credential.refresh, expires: credential.expires },
+        {
+          state: await readPluginState(closure.stateDir),
+          timeoutMs: closure.requestTimeoutMs,
+        },
+      );
+      // ensureFreshToken refreshes near expiry and otherwise returns the same
+      // access token; OpenCode persists whatever full credential we return.
+      return {
+        type: "oauth" as const,
+        methodID: credential.methodID,
+        refresh: credential.refresh,
+        access: next,
+        expires: credential.expires,
+        metadata: credential.metadata,
+      };
+    },
+    label(credential) {
+      if (credential.metadata && typeof credential.metadata === "object") {
+        const userId = (credential.metadata as Record<string, unknown>).userId;
+        if (typeof userId === "string" && userId) return userId;
       }
-    }
+      return undefined;
+    },
+  };
 
-    if (!token || !baseUrl) {
-      return (cached ?? {}) as unknown as Record<string, ModelV2>;
-    }
+  const apiKey = buildApiKeyMethodRegistration(closure);
 
+  return { oauth, apiKey };
+}
+
+/**
+ * Force-refresh the stored budget snapshot. Shared by the session.idle event
+ * subscription and the budget tool; failures are silent — the tools force a
+ * fresh fetch and report the reason themselves.
+ */
+export async function runBudgetRefresh(
+  closure: PluginClosure,
+  getCredential?: () => Promise<CredentialValue | null>,
+): Promise<void> {
+  try {
+    const state = await readPluginState(closure.stateDir);
+    const entry = await credentialEntry(closure, getCredential);
+    if (!state?.gatewayUrl || !entry) return;
+    const token = entry.type === "oauth"
+      ? await ensureFreshToken(
+        { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+        {
+          state,
+          timeoutMs: closure.requestTimeoutMs,
+        },
+      )
+      : entry.key;
+    const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, closure.requestTimeoutMs);
+    await updatePluginState(
+      { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
+      closure.stateDir,
+    );
+  } catch {
+    // Background refresh: failures are silent; tools force a fresh fetch.
+  }
+}
+
+/**
+ * Read the current credential for plugin paths (catalog bootstrap, budget
+ * refresh): the v2 integration reader first, the v1 auth.json file as
+ * fallback (v1-era installations).
+ */
+async function credentialEntry(
+  closure: PluginClosure,
+  getCredential?: () => Promise<CredentialValue | null>,
+): Promise<AuthJsonEntry | null> {
+  if (getCredential) {
+    try {
+      const cred = await getCredential();
+      if (cred) {
+        if (cred.type === "oauth" && typeof cred.access === "string" && cred.access) {
+          return {
+            type: "oauth",
+            access: cred.access,
+            refresh: typeof cred.refresh === "string" ? cred.refresh : "",
+            expires: typeof cred.expires === "number" ? cred.expires : 0,
+          };
+        }
+        if (cred.type === "key" && typeof cred.key === "string" && cred.key) {
+          return { type: "api", key: cred.key };
+        }
+      }
+    } catch {
+      // Integration reader failure falls through to the v1 file fallback.
+    }
+  }
+  return readAuthEntry(closure.authPath, closure.providerId);
+}
+
+/**
+ * Build the initial v2 Model.Info list: fetch the catalog when credentials
+ * are available, and fall back to the on-disk cache otherwise. Credentials
+ * come from the v2 integration reader when supplied, with the v1 auth.json
+ * file as fallback.
+ */
+export async function buildInitialModels(
+  closure: PluginClosure,
+  getCredential?: () => Promise<CredentialValue | null>,
+): Promise<Record<string, ModelSchema.Info>> {
+  const entry = await credentialEntry(closure, getCredential);
+  const token = entry?.type === "oauth" ? entry.access : entry?.type === "api" ? entry.key : undefined;
+
+  const state = await readPluginState(closure.stateDir);
+  const baseUrl = closure.baseUrl ??
+    (state?.gatewayUrl ? normalizeBaseUrl(state.gatewayUrl) : null);
+
+  const toRecord = (models: Record<string, OpencodeModelConfig>) => {
+    const record: Record<string, ModelSchema.Info> = {};
+    for (const [id, config] of Object.entries(models)) {
+      record[id] = mapModelConfigToInfo(closure.providerId, id, config);
+    }
+    return record;
+  };
+
+  const cached = await loadCachedModels(closure.stateDir);
+  const cachedRecord = cached ?? {};
+
+  if (token && baseUrl) {
     try {
       const fresh = await fetchCatalogModels(
         {
@@ -451,185 +577,207 @@ export function buildProviderModels(closure: PluginClosure) {
         },
         token,
       );
-      const record: Record<string, OpencodeModelConfig> = {};
+      const record: Record<string, OpencodeModelConfig> = { ...cachedRecord };
       for (const model of fresh) {
         record[model.name] = model;
       }
       await saveCachedModels(record, closure.stateDir);
-      return record as unknown as Record<string, ModelV2>;
+      return toRecord(record);
     } catch {
-      return (cached ?? {}) as unknown as Record<string, ModelV2>;
+      return toRecord(cachedRecord);
     }
+  }
+
+  return toRecord(cachedRecord);
+}
+
+/**
+ * Minimal structural v2 setup context, structural so tests can exercise
+ * setup with minimal fakes without importing OpenCode runtime internals.
+ * The `integration.connection` pair is the v2 credential source.
+ */
+export interface SetupContext {
+  readonly options: Record<string, unknown>;
+  readonly provider: {
+    readonly transform: (callback: (editor: {
+      add: (input: { info: unknown; models: unknown[] }) => void;
+    }) => void) => Promise<{ dispose: () => Promise<void> }>;
+  };
+  readonly tool: {
+    readonly transform: (callback: (editor: {
+      add: (tool: unknown) => void;
+    }) => void) => Promise<{ dispose: () => Promise<void> }>;
+  };
+  readonly command: {
+    readonly transform: (callback: (editor: {
+      add: (definition: { name: string; description?: string; execute: (input: { sessionID: string; delivery?: unknown }) => Promise<void> }) => void;
+    }) => void) => Promise<{ dispose: () => Promise<void> }>;
+  };
+  readonly integration: {
+    readonly transform: (callback: (editor: {
+      method: {
+        update: (input: unknown) => void;
+      };
+    }) => void) => Promise<{ dispose: () => Promise<void> }>;
+    readonly connection: {
+      readonly active: (integrationID: string) => Promise<unknown>;
+      readonly resolve: (connection: unknown) => Promise<unknown>;
+    };
+  };
+  readonly event: {
+    readonly subscribe: (options?: { signal?: AbortSignal }) => AsyncIterable<{
+      readonly type: string;
+      readonly data?: Record<string, unknown>;
+    }>;
+  };
+  readonly session: {
+    readonly prompt: (input: { sessionID: string; text: string; delivery?: unknown }) => Promise<unknown>;
+    readonly hook: (name: string, callback: (input: Record<string, unknown>) => unknown, options?: { providerID?: string }) => unknown;
   };
 }
 
-export default async function ActsisActiveLLMPlugin(
-  input: PluginInput,
-  options?: OpenCodePluginOptions,
-): Promise<{
-  config?: (config: OpenCodeConfig) => Promise<void>;
-  auth?: {
-    provider: string;
-    loader: (getAuth: () => Promise<Auth>) => Promise<Record<string, unknown>>;
-    methods: Array<{ type: "oauth" | "api"; label: string } & Record<string, unknown>>;
-  };
-  provider?: {
-    id: string;
-    models: (provider: ProviderV2, ctx: { auth?: Auth }) => Promise<Record<string, ModelV2>>;
-  };
-  tool?: Record<string, unknown>;
-  "chat.headers"?: (input: { sessionID: string; model?: { providerID: string; modelID: string } }, output: { headers: Record<string, string> }) => Promise<void>;
-  "chat.params"?: (input: { model?: { providerID: string; modelID: string } }, output: { options: Record<string, unknown> }) => Promise<void>;
-  event?: (input: { event: Event }) => Promise<void>;
-}> {
-  const closure = await resolveClosure(
-    input,
-    options,
-    defaultAuthPath(),
-    process.env.ACTSIS_LITELLM_STATE_DIR,
-  );
+/**
+ * Server plugin (v2): registers the ACTSIS LiteLLM gateway provider, its
+ * dynamic model catalog, the OAuth + API-key auth methods on the linked
+ * integration, the four slash commands, the four tools, the session hooks
+ * (headers / thinking normalization / informational error classification),
+ * and the session.idle budget refresh loop.
+ */
+export default Plugin.define({
+  id: DEFAULT_PROVIDER_ID,
+  async setup(ctx: unknown) {
+    const context = ctx as SetupContext;
+    const closure = await resolveClosure(
+      context.options as Record<string, unknown> | undefined,
+      defaultAuthPath(),
+      resolveStateDir(),
+    );
+    const getCredential = makeCredentialReader(context, closure.providerId);
 
-  const hooks: Awaited<ReturnType<typeof ActsisActiveLLMPlugin>> = {
-    config: undefined,
-    auth: undefined,
-    provider: undefined,
-    tool: undefined,
-    "chat.headers": undefined,
-    "chat.params": undefined,
-    event: undefined,
-  };
-
-  hooks.config = async (config: OpenCodeConfig): Promise<void> => {
-    const token = readAuthEntry(closure.authPath, closure.providerId)?.then((entry) => {
-      if (entry?.type === "oauth") return entry.access;
-      if (entry?.type === "api") return entry.key;
-      return undefined;
+    // --- Integration auth methods (must exist before the provider binds) ---
+    await context.integration.transform((editor) => {
+      const { oauth, apiKey } = buildAuthMethodRegistrations(closure);
+      editor.method.update(oauth);
+      editor.method.update(apiKey);
     });
 
-    let models: Record<string, OpencodeModelConfig> = {};
-    const resolvedToken = await token;
-    const cacheAge = await computeCacheAge(closure.stateDir);
-    const cacheFresh = cacheAge !== null && cacheAge < closure.catalogTtlMs;
+    // --- Provider with its dynamic model catalog ---
+    // Transform callbacks must stay synchronous (Immer registry contract):
+    // load the catalog before registration and capture it in the closure.
+    const providerInfo = buildProviderInfo(closure);
+    const initialModels = await buildInitialModels(closure, getCredential);
+    await context.provider.transform((editor) => {
+      editor.add({
+        info: providerInfo,
+        models: Object.values(initialModels),
+      });
+    });
 
-    if (resolvedToken && closure.baseUrl && (!cacheFresh || Object.keys(models).length === 0)) {
+    // --- Tools ---
+    await context.tool.transform((editor) => {
+      const toolDeps: ToolDeps = {
+        providerId: closure.providerId,
+        stateDir: closure.stateDir,
+        authPath: closure.authPath,
+        getCredential,
+      };
+      for (const info of buildLitellmToolInfos(toolDeps)) {
+        editor.add(info as unknown);
+      }
+    });
+
+    // --- Slash commands (submit a prompt mentioning the matching tool) ---
+    await context.command.transform((editor) => {
+      for (const command of buildCommandDefinitions()) {
+        editor.add({
+          name: command.name,
+          description: command.description,
+          execute: async ({ sessionID, delivery }: { sessionID: string; delivery?: unknown }) => {
+            await context.session.prompt({
+              sessionID,
+              text: command.template,
+              ...(delivery !== undefined ? { delivery } : {}),
+            });
+          },
+        });
+      }
+    });
+
+    // --- Session hooks, scoped to this provider ---
+    await context.session.hook(
+      "model.request",
+      (event) => {
+        const ev = event as { sessionID?: string; headers?: Record<string, string> };
+        const headers = ev.headers;
+        if (headers && ev.sessionID) {
+          headers["X-Litellm-Session-ID"] = ev.sessionID;
+        }
+      },
+      { providerID: closure.providerId },
+    );
+
+    await context.session.hook(
+      "context",
+      (event) => {
+        const ev = event as { options?: Record<string, unknown> };
+        if (ev.options) {
+          normalizeThinkingOption(ev.options);
+        }
+      },
+      { providerID: closure.providerId },
+    );
+
+    // Read-only informational classification of gateway limit errors on
+    // non-ok responses. Never rewrites the response; best effort only.
+    await context.session.hook(
+      "http.response",
+      (event) => {
+        const ev = event as { response?: Response; model?: { modelID?: string } };
+        const response = ev.response;
+        if (!response) return;
+        void Promise.resolve(response.clone().text().catch(() => ""))
+          .then((text) => {
+            if (!text) return;
+            if (isOverflowErrorMessage(text)) {
+              console.warn(
+                `[actsis-litellm] context overflow on model ${ev.model?.modelID ?? "unknown"}: ${text.slice(0, 300)}`,
+              );
+              return;
+            }
+            const info = parseLimitError(text);
+            if (info?.kind === "budget_exceeded") {
+              console.warn(`[actsis-litellm] budget warning: ${formatBudgetWarning(info)}`);
+            } else if (info?.kind === "throttling_error") {
+              console.warn(`[actsis-litellm] throttle warning: ${formatThrottleWarning(info)}`);
+            }
+          })
+          .catch(() => {
+            // Informational only.
+          });
+      },
+      { providerID: closure.providerId },
+    );
+
+    // --- session.idle budget refresh loop ---
+    const controller = new AbortController();
+    const eventLoop = (async () => {
       try {
-        const fresh = await fetchCatalogModels(
-          {
-            baseUrl: closure.baseUrl,
-            providerId: closure.providerId,
-            catalogTtlMs: closure.catalogTtlMs,
-            requestTimeoutMs: closure.requestTimeoutMs,
-          },
-          resolvedToken,
-        );
-        for (const model of fresh) {
-          models[model.name] = model;
+        for await (const event of context.event.subscribe({ signal: controller.signal })) {
+          if (event.type !== "session.idle") continue;
+          try {
+            await runBudgetRefresh(closure, getCredential);
+          } catch {
+            // Background refresh: failures are silent.
+          }
         }
-        await saveCachedModels(models, closure.stateDir);
       } catch {
-        const cached = await loadCachedModels(closure.stateDir);
-        if (cached) {
-          models = cached;
-        }
+        // Subscribe/stream failures abort the loop silently.
       }
-    } else {
-      const cached = await loadCachedModels(closure.stateDir);
-      if (cached) {
-        models = cached;
-      }
-    }
+    })();
+    void eventLoop;
 
-    buildProviderInjection(config, {
-      providerId: closure.providerId,
-      baseUrl: closure.baseUrl,
-      models,
-    });
-
-    const commands = buildCommandTemplates(config.command);
-    if (!config.command) {
-      config.command = {};
-    }
-    Object.assign(config.command, commands);
-  };
-
-  hooks.auth = {
-    provider: closure.providerId,
-    loader: buildAuthLoader(closure, input),
-    methods: [buildOAuthMethod(closure) as unknown as ReturnType<typeof buildOAuthMethod> & Record<string, unknown>, buildApiKeyMethod(closure) as unknown as ReturnType<typeof buildApiKeyMethod> & Record<string, unknown>],
-  };
-
-  hooks.provider = {
-    id: closure.providerId,
-    models: buildProviderModels(closure),
-  };
-
-  hooks.tool = {}; // will be populated from tools.ts wiring
-
-  hooks["chat.headers"] = async (
-    hookInput: { sessionID: string; model?: { providerID: string; modelID: string } },
-    output: { headers: Record<string, string> },
-  ): Promise<void> => {
-    if (hookInput.model?.providerID === closure.providerId && hookInput.sessionID) {
-      output.headers["X-Litellm-Session-ID"] = hookInput.sessionID;
-    }
-  };
-
-  hooks["chat.params"] = async (
-    hookInput: { model?: { providerID: string; modelID: string } },
-    output: { options: Record<string, unknown> },
-  ): Promise<void> => {
-    if (hookInput.model?.providerID !== closure.providerId) {
-      return;
-    }
-    const thinking = output.options.thinking;
-    if (typeof thinking === "string") {
-      if (thinking.toLowerCase() === "off" || thinking.toLowerCase() === "disabled") {
-        output.options.thinking = { type: "disabled" };
-      } else {
-        output.options.thinking = { type: "adaptive" };
-      }
-    } else if (typeof thinking === "object" && thinking !== null) {
-      const type = (thinking as { type?: unknown }).type;
-      if (type !== "disabled" && type !== "adaptive") {
-        output.options.thinking = { type: "adaptive" };
-      }
-    }
-  };
-
-  // session.idle fires at the end of an agent turn (pi's `agent_end` parity):
-  // refresh the stored budget snapshot in the background.
-  hooks.event = async ({ event }: { event: Event }): Promise<void> => {
-    if (event.type !== "session.idle") return;
-    try {
-      const state = await readPluginState(closure.stateDir);
-      const entry = await readAuthEntry(closure.authPath, closure.providerId);
-      if (!state?.gatewayUrl || !entry) return;
-      const token = entry.type === "oauth"
-        ? await ensureFreshToken(
-          { access: entry.access, refresh: entry.refresh, expires: entry.expires },
-          {
-            state,
-            timeoutMs: closure.requestTimeoutMs,
-            onRefreshed: async (next) => {
-              await input.client.auth.set({
-                path: { id: closure.providerId },
-                body: { type: "oauth", ...next },
-              });
-            },
-          },
-        )
-        : entry.key;
-      const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, closure.requestTimeoutMs);
-      await updatePluginState(
-        { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
-        closure.stateDir,
-      );
-    } catch {
-      // Background refresh: failures are silent; tools force a fresh fetch.
-    }
-  };
-
-  return hooks;
-}
-
-export { ActsisActiveLLMPlugin };
+    return async () => {
+      controller.abort();
+    };
+  },
+});

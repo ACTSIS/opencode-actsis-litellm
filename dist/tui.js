@@ -2,6 +2,7 @@
 import { insertNode as _$insertNode } from "@opentui/solid";
 import { insert as _$insert } from "@opentui/solid";
 import { createElement as _$createElement } from "@opentui/solid";
+import { Plugin } from "@opencode/plugin/tui";
 import { createSignal } from "solid-js";
 
 // src/budget-widget.ts
@@ -76,27 +77,28 @@ async function readBudgetWidgetData(dir) {
 
 // src/tui.tsx
 var IDLE_REFRESH_DEBOUNCE_MS = 2e3;
-var tui = async (api, _options, _meta) => {
-  let data = null;
-  try {
-    data = await readBudgetWidgetData();
-  } catch {
-    data = null;
-  }
-  const [line, setLine] = createSignal(data ? budgetWidgetLine(data, Date.now()) : null);
-  let timeout;
-  const refresh = async () => {
+var tui_default = Plugin.define({
+  id: "actsis-litellm-budget",
+  async setup(context) {
+    let data = null;
     try {
-      const next = await readBudgetWidgetData();
-      setLine(next ? budgetWidgetLine(next, Date.now()) : null);
+      data = await readBudgetWidgetData();
     } catch {
-      setLine(null);
+      data = null;
     }
-  };
-  api.slots.register({
-    order: 80,
-    slots: {
-      sidebar_footer(_ctx, _props) {
+    const [line, setLine] = createSignal(data ? budgetWidgetLine(data, Date.now()) : null);
+    let timeout;
+    const refresh = async () => {
+      try {
+        const next = await readBudgetWidgetData();
+        setLine(next ? budgetWidgetLine(next, Date.now()) : null);
+      } catch {
+        setLine(null);
+      }
+    };
+    context.ui.slot({
+      append: "sidebar.footer",
+      render: (_input) => {
         return line() ? (() => {
           var _el$ = _$createElement("box"), _el$2 = _$createElement("text");
           _$insertNode(_el$, _el$2);
@@ -104,22 +106,18 @@ var tui = async (api, _options, _meta) => {
           return _el$;
         })() : null;
       }
-    }
-  });
-  const unsubIdle = api.event.on("session.idle", () => {
-    timeout = setTimeout(() => void refresh(), IDLE_REFRESH_DEBOUNCE_MS);
-  });
-  void refresh();
-  api.lifecycle.onDispose(() => {
-    unsubIdle();
-    if (timeout !== void 0) clearTimeout(timeout);
-  });
-};
-var plugin = {
-  id: "actsis-litellm-budget",
-  tui
-};
-var tui_default = plugin;
+    });
+    const unsubIdle = context.data.on("session.idle", () => {
+      if (timeout !== void 0) clearTimeout(timeout);
+      timeout = setTimeout(() => void refresh(), IDLE_REFRESH_DEBOUNCE_MS);
+    });
+    void refresh();
+    return () => {
+      unsubIdle();
+      if (timeout !== void 0) clearTimeout(timeout);
+    };
+  }
+});
 export {
   tui_default as default
 };

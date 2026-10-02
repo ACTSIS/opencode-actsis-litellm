@@ -121,6 +121,8 @@ export function parseCallbackParams(callbackUrl: string): {
 
 export interface LoginConfig {
   requestTimeoutMs: number;
+  /** Directory for plugin state; defaults to the system state dir when omitted. */
+  stateDir?: string;
 }
 
 export interface LoginResultSuccess {
@@ -213,17 +215,20 @@ export async function runLoginFlow(
           Date.now() +
           Math.max(tokenResponse.expiresIn - 300, 60) * 1000;
 
-        await updatePluginState({
-          gatewayUrl: discovery.issuer,
-          providerId: undefined,
-          authMode: "oauth",
-          clientId,
-          tokenEndpoint: discovery.tokenEndpoint,
-          revocationEndpoint: discovery.revocationEndpoint,
-          resource: discovery.resource,
-          schemeUpgraded: notices?.schemeUpgraded,
-          savedAt: Date.now(),
-        });
+        await updatePluginState(
+          {
+            gatewayUrl: discovery.issuer,
+            providerId: undefined,
+            authMode: "oauth",
+            clientId,
+            tokenEndpoint: discovery.tokenEndpoint,
+            revocationEndpoint: discovery.revocationEndpoint,
+            resource: discovery.resource,
+            schemeUpgraded: notices?.schemeUpgraded,
+            savedAt: Date.now(),
+          },
+          config.stateDir,
+        );
 
         return {
           type: "success",

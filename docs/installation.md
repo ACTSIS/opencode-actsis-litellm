@@ -11,8 +11,8 @@ when configuring.
 
 ## Requirements
 
-- **OpenCode >= 1.14.0** (declared in the plugin's `engines`). The TUI budget
-  widget has been verified on OpenCode **1.18.32**.
+- **OpenCode >= 2.0.0** (declared in the plugin's `engines`; verified against v2.0.20). The TUI budget
+  widget has been verified on OpenCode **2.0.20**.
 - **No manual dependency installs.** The plugin runs on the Bun runtime
   embedded in OpenCode. Peer packages such as `@opentui/core`,
   `@opentui/solid`, and `solid-js` are only needed for **building the plugin
@@ -28,25 +28,25 @@ Add the package spec to **both** OpenCode configuration files:
 
    ```json
    {
-     "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
+     "plugins": ["github:ACTSIS/opencode-actsis-litellm"]
    }
    ```
 
-2. `~/.config/opencode/tui.json` — registers the **budget widget** for the
+2. `~/.config/opencode/cli.json` — registers the **budget widget** for the
    TUI (same spec, separate file):
 
    ```json
    {
-     "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
+     "plugins": ["github:ACTSIS/opencode-actsis-litellm"]
    }
    ```
 
 The `git:github.com/ACTSIS/opencode-actsis-litellm` shorthand is also
 accepted in both files.
 
-> **Dual-config requirement:** the `plugin` array lives in two different
+> **Dual-config requirement:** the `plugins` array lives in two different
 > files with two different roles. `opencode.json` alone gives you the
-> provider, login, tools, and commands; `tui.json` alone gives you the
+> provider, login, tools, and commands; `cli.json` alone gives you the
 > sidebar budget widget. For the full experience, add the spec to **both**.
 > This applies to every install method below, not only the GitHub spec.
 
@@ -58,7 +58,7 @@ The same dual-config rule applies to the other supported spec forms:
 
   ```json
   {
-    "plugin": ["opencode-actsis-litellm"]
+    "plugins": ["opencode-actsis-litellm"]
   }
   ```
 
@@ -66,12 +66,12 @@ The same dual-config rule applies to the other supported spec forms:
 
   ```json
   {
-    "plugin": ["/path/to/opencode-actsis-litellm"]
+    "plugins": ["/path/to/opencode-actsis-litellm"]
   }
   ```
 
 Use the same spec in `~/.config/opencode/opencode.json` **and**
-`~/.config/opencode/tui.json`.
+`~/.config/opencode/cli.json`.
 
 ## Login walkthrough
 
@@ -86,7 +86,7 @@ opencode auth login
 2. **Gateway URL prompt (conditional).** The gateway URL is asked **only when
    it is not already resolved**. Resolution precedence (highest first):
    1. `ACTSIS_LITELLM_URL` environment variable
-   2. Plugin options tuple in `opencode.json`
+   2. Plugin options (`{ package, options }` object form in `opencode.json`)
    3. Stored plugin state (`~/.local/share/opencode/actsis-litellm/state.json`,
       written by a previous login)
    4. Interactive prompt
@@ -129,7 +129,7 @@ After installing and logging in, verify each item:
 | Symptom | What to do |
 |---------|------------|
 | **Provider missing from `opencode auth login`** | The plugin cache may be empty after a failed or partial install. Re-install the plugin (both config files) and restart OpenCode so it re-registers. |
-| **Budget widget not rendering** | Verify the `tui.json` entry exists. The widget requires a TUI build with plugin support. For a file-plugin fallback (local checkout), OpenCode's TUI loader needs an absolute path whose module default-exports `{ id, tui }` from the compiled bundle (`main` -> `dist/tui.js`); raw `src/*.tsx` entries are not resolved. |
+| **Budget widget not rendering** | Verify the `cli.json` entry exists. The widget requires a TUI build with plugin support. For a file-plugin fallback (local checkout), OpenCode's TUI loader needs an absolute path whose module default-exports a v2 `Plugin.define({ id, setup })` from the compiled bundle (`main` -> `dist/tui.js`); raw `src/*.tsx` entries are not resolved. |
 | **Models missing from the picker** | Run `/actsis-litellm-models` to force a sync, check `/actsis-litellm-status` for the cache model count, then **restart OpenCode** (the picker is refreshed at startup). |
 | **Login times out** | The SSO loopback callback window is 5 minutes. If the browser step took longer, run `opencode auth login` again. |
 | **Refresh refused (`invalid_grant`)** | The SSO refresh token expired, was rotated elsewhere, or was revoked. Log in again with `opencode auth login`. |
@@ -144,15 +144,15 @@ repository** and regenerated whenever `src/` changes (`npm run build`, then
 commit the new `dist/`).
 
 The TUI loader resolves npm/git packages only through the package entrypoint
-contract: `main` (and the `"."` export) must point at `./dist/tui.js`, with
-object-form `exports`:
+contract: `main` (and the `"."` export) must point at the server bundle
+(`dist/index.js`), with the `"./tui"` export pointing at the CLI bundle
+(`dist/tui.js`):
 
 ```json
 {
-  "main": "./dist/tui.js",
+  "main": "./dist/index.js",
   "exports": {
-    ".": { "import": "./dist/tui.js" },
-    "./server": { "import": "./dist/index.js" },
+    ".": { "import": "./dist/index.js" },
     "./tui": { "import": "./dist/tui.js" }
   }
 }

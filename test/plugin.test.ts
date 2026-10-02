@@ -1,267 +1,206 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { Config, PluginInput } from "@opencode-ai/plugin";
-import type { Auth } from "@opencode-ai/sdk/v2";
-import {
-  buildProviderInjection,
-  buildCommandTemplates,
-  makeAuthFetch,
-  ActsisActiveLLMPlugin,
+import serverPlugin, {
   resolveClosure,
+  buildProviderInfo,
+  mapModelConfigToInfo,
+  buildCommandDefinitions,
+  buildInitialModels,
+  buildApiKeyMethodRegistration,
+  buildOAuthMethodRegistration,
+  normalizeThinkingOption,
+  runBudgetRefresh,
+  makeAuthFetch,
+  type PluginClosure,
+  type SetupContext,
 } from "../src/plugin.ts";
 import { writePluginState, readPluginState } from "../src/state.ts";
 import { defaultAuthPath } from "../src/auth-store.ts";
 import type { OpencodeModelConfig } from "../src/catalog-cache.ts";
-import type { createOpencodeClient } from "@opencode-ai/sdk";
 
-type TestInput = PluginInput & { client: ReturnType<typeof createOpencodeClient> };
-
-function makeInput(): TestInput {
+function makeModelConfig(
+  overrides: Partial<OpencodeModelConfig> = {},
+): OpencodeModelConfig {
   return {
-    client: {
-      auth: { set: vi.fn(async () => true) } as unknown as ReturnType<typeof createOpencodeClient>["auth"],
-      app: { log: vi.fn(async () => undefined) } as unknown as ReturnType<typeof createOpencodeClient>["app"],
-      tui: { showToast: vi.fn(async () => undefined) } as unknown as ReturnType<typeof createOpencodeClient>["tui"],
-    } as unknown as ReturnType<typeof createOpencodeClient>,
-    project: {} as unknown as TestInput["project"],
-    directory: ".",
-    worktree: ".",
-    experimental_workspace: { register: vi.fn() },
-    serverUrl: new URL("http://localhost:1234"),
-    $: {} as unknown as TestInput["$"],
+    name: "gpt-4",
+    tool_call: true,
+    reasoning: true,
+    limit: { context: 128_000, output: 16_384 },
+    modalities: { input: ["text"], output: ["text"] },
+    ...overrides,
   };
 }
 
-describe("buildProviderInjection", () => {
-  it("creates a provider entry when none exists", () => {
-    const config: Config = {};
-    const model: OpencodeModelConfig = {
-      name: "gpt-4",
-      tool_call: true,
-      reasoning: true,
-      limit: { context: 128000, output: 16384 },
-      modalities: { input: ["text"], output: ["text"] },
-    };
+interface RegisteredRecord {
+  info: Record<string, unknown>;
+  models: Array<Record<string, unknown>>;
+}
 
-    buildProviderInjection(config, {
-      providerId: "actsis-litellm",
-      baseUrl: "https://gw.example.com",
-      models: { "gpt-4": model },
-    });
+function makeFakeContext(options: Record<string, unknown> = {}) {
+  const providers: RegisteredRecord[] = [];
+  const tools: Array<Record<string, unknown>> = [];
+  const commands: Array<{
+    name: string;
+    description?: string;
+    execute: (input: { sessionID: string; prompt?: unknown; delivery?: unknown }) => Promise<void>;
+  }> = [];
+  const methods: Array<Record<string, unknown>> = [];
+  const hooks: Record<
+    string,
+    {
+      callback: (input: Record<string, unknown>) => unknown;
+      options?: { providerID?: string };
+    }
+  > = {};
+  const sessionPrompt = vi.fn(async () => ({}) as unknown);
+  const registrations: Array<{ dispose: ReturnType<typeof vi.fn> }> = [];
 
-    expect(config.provider?.["actsis-litellm"]).toEqual({
-      npm: "@ai-sdk/openai-compatible",
-      name: "Actsis LiteLLM",
-      options: { baseURL: "https://gw.example.com/v1", apiKey: "" },
-      models: { "gpt-4": model },
-    });
-  });
+  const register = () => {
+    const dispose = vi.fn(async () => {});
+    registrations.push({ dispose });
+    return dispose;
+  };
 
-  it("preserves existing npm/name and merges models", () => {
-    const existingModel: OpencodeModelConfig = {
-      name: "existing",
-      tool_call: false,
-      reasoning: false,
-      limit: { context: 1000, output: 1000 },
-      modalities: { input: ["text"], output: ["text"] },
-    };
-
-    const config: Config = {
-      provider: {
-        "actsis-litellm": {
-          npm: "custom-npm",
-          name: "Custom Name",
-          options: { baseURL: "https://old.example.com/v1", apiKey: "" },
-          models: { existing: existingModel },
-        } as unknown as NonNullable<Config["provider"]>["actsis-litellm"],
+  const fake = {
+    options,
+    provider: {
+      transform: async (cb: (e: any) => Promise<void> | void) => {
+        await cb({
+          list: () => [],
+          get: () => undefined,
+          add: (input: RegisteredRecord) => providers.push(input),
+          update: () => {},
+          remove: () => {},
+          models: { set: () => {}, update: () => {}, remove: () => {} },
+        });
+        return { dispose: register() };
       },
-    };
+    },
+    tool: {
+      transform: async (cb: (e: any) => void) => {
+        cb({
+          list: () => [],
+          get: () => undefined,
+          add: (tool: Record<string, unknown>) => tools.push(tool),
+          update: () => {},
+          remove: () => {},
+          namespace: () => {},
+        });
+        return { dispose: register() };
+      },
+    },
+    command: {
+      transform: async (cb: (e: any) => void) => {
+        cb({ add: (command: (typeof commands)[number]) => commands.push(command) });
+        return { dispose: register() };
+      },
+    },
+    integration: {
+      connection: {
+        active: async () => undefined,
+        resolve: async () => undefined,
+      },
+      transform: async (cb: (e: any) => void) => {
+        cb({
+          list: () => [],
+          get: () => undefined,
+          update: () => {},
+          remove: () => {},
+          method: {
+            list: () => [],
+            update: (input: Record<string, unknown>) => methods.push(input),
+            remove: () => {},
+          },
+        });
+        return { dispose: register() };
+      },
+    },
+    session: {
+      prompt: sessionPrompt,
+      hook: (
+        name: string,
+        callback: (input: Record<string, unknown>) => unknown,
+        hookOptions?: { providerID?: string },
+      ) => {
+        hooks[name] = { callback, options: hookOptions };
+        return { dispose: register() };
+      },
+    },
+    event: {
+      subscribe: () => (async function* () {})(),
+    },
+  };
 
-    const newModel: OpencodeModelConfig = {
-      name: "gpt-4",
-      tool_call: true,
-      reasoning: true,
-      limit: { context: 128000, output: 16384 },
-      modalities: { input: ["text"], output: ["text"] },
-    };
+  return {
+    ctx: fake as unknown as SetupContext,
+    providers,
+    tools,
+    commands,
+    methods,
+    hooks,
+    sessionPrompt,
+    registrations,
+  };
+}
 
-    buildProviderInjection(config, {
-      providerId: "actsis-litellm",
-      baseUrl: "https://gw.example.com",
-      models: { "gpt-4": newModel },
-    });
+function makeClosure(overrides: Partial<PluginClosure> = {}): PluginClosure {
+  return {
+    baseUrl: "https://gw.example.com",
+    providerId: "actsis-litellm",
+    catalogTtlMs: 15 * 60 * 1000,
+    requestTimeoutMs: 30_000,
+    authPath: defaultAuthPath(),
+    stateDir: undefined,
+    ...overrides,
+  };
+}
 
-    const provider = config.provider!["actsis-litellm"] as { npm: string; name: string; options: { baseURL: string }; models: Record<string, OpencodeModelConfig> };
-    expect(provider.npm).toBe("custom-npm");
-    expect(provider.name).toBe("Custom Name");
-    expect(provider.models["gpt-4"]).toEqual(newModel);
-    expect(provider.models["existing"]).toEqual(existingModel);
+describe("resolveClosure", () => {
+  it("reads env URL over options and stored URL", async () => {
+    const original = process.env.ACTSIS_LITELLM_URL;
+    process.env.ACTSIS_LITELLM_URL = "https://env.example.com";
+    try {
+      const closure = await resolveClosure({ url: "https://opt.example.com" });
+      expect(closure.baseUrl).toBe("https://env.example.com");
+    } finally {
+      if (original !== undefined) process.env.ACTSIS_LITELLM_URL = original;
+      else delete process.env.ACTSIS_LITELLM_URL;
+    }
   });
-});
 
-describe("buildCommandTemplates", () => {
-  it("injects all four command templates when config.command is empty", () => {
-    const commands = buildCommandTemplates(undefined);
-    expect(Object.keys(commands)).toEqual(["actsis-litellm-status", "actsis-litellm-models", "actsis-litellm-budget", "actsis-litellm-logout"]);
-    expect(commands["actsis-litellm-status"].template).toContain("actsis_litellm_status tool");
-    expect(commands["actsis-litellm-models"].description).toContain("Force-sync");
-    expect(commands["actsis-litellm-budget"].template).toContain("actsis_litellm_budget tool");
-  });
-
-  it("does not overwrite user-defined commands", () => {
-    const existing = {
-      "actsis-litellm-status": { template: "user template", description: "user desc" },
-      "actsis-litellm-budget": { template: "user budget template", description: "user budget desc" },
-      "other-command": { template: "other", description: "other" },
-    };
-    const commands = buildCommandTemplates(existing);
-    expect(commands["actsis-litellm-status"]).toBeUndefined();
-    expect(commands["actsis-litellm-budget"]).toBeUndefined();
-    expect(commands["actsis-litellm-models"]).toBeDefined();
-    expect(commands["actsis-litellm-logout"]).toBeDefined();
-    expect(existing["actsis-litellm-status"].template).toBe("user template");
-    expect(existing["actsis-litellm-budget"].template).toBe("user budget template");
-  });
-});
-
-describe("ActsisActiveLLMPlugin auth hook structure", () => {
-  it("exposes oauth and api methods with gatewayUrl prompts", async () => {
-    const hooks = await ActsisActiveLLMPlugin(makeInput(), { url: "https://gw.example.com" });
-    expect(hooks.auth).toBeDefined();
-    expect(hooks.auth!.provider).toBe("actsis-litellm");
-    expect(hooks.auth!.methods).toHaveLength(2);
-
-    const oauth = hooks.auth!.methods.find((m) => m.type === "oauth")!;
-    expect(oauth.label).toBe("Sign in with SSO (browser)");
-    const oauthPrompts = oauth.prompts as Array<{ key: string }>;
-    expect(oauthPrompts[0].key).toBe("gatewayUrl");
-
-    const api = hooks.auth!.methods.find((m) => m.type === "api")!;
-    expect(api.label).toBe("Use an API key");
-    const apiPrompts = api.prompts as Array<{ key: string }>;
-    expect(apiPrompts.map((p) => p.key)).toEqual(["gatewayUrl"]);
-  });
-});
-
-describe("api method authorize", () => {
-  let stateDir: string;
-  const savedEnv: { url?: string; stateDir?: string } = {};
-
-  beforeEach(async () => {
-    stateDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-test-"));
-    savedEnv.url = process.env.ACTSIS_LITELLM_URL;
-    savedEnv.stateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+  it("falls back to options URL when env is absent", async () => {
+    const original = process.env.ACTSIS_LITELLM_URL;
     delete process.env.ACTSIS_LITELLM_URL;
-    process.env.ACTSIS_LITELLM_STATE_DIR = stateDir;
-  });
-
-  afterEach(async () => {
-    if (savedEnv.url !== undefined) {
-      process.env.ACTSIS_LITELLM_URL = savedEnv.url;
-    } else {
-      delete process.env.ACTSIS_LITELLM_URL;
+    try {
+      const closure = await resolveClosure({ url: "https://opt.example.com" });
+      expect(closure.baseUrl).toBe("https://opt.example.com");
+    } finally {
+      if (original !== undefined) process.env.ACTSIS_LITELLM_URL = original;
     }
-    if (savedEnv.stateDir !== undefined) {
-      process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
-    } else {
-      delete process.env.ACTSIS_LITELLM_STATE_DIR;
-    }
-    await rm(stateDir, { recursive: true, force: true });
   });
 
-  it("records the gateway URL and auth mode, returning success without a key", async () => {
-    const hooks = await ActsisActiveLLMPlugin(makeInput(), { url: "https://configured.example.com" });
-    const api = hooks.auth!.methods.find((m) => m.type === "api")!;
-    const authorize = api.authorize as (inputs?: Record<string, string>) => Promise<{ type: string; key?: string }>;
-
-    const result = await authorize({ gatewayUrl: "https://gw.example.com" });
-
-    expect(result.type).toBe("success");
-    expect(result).not.toHaveProperty("key");
-
-    const state = await readPluginState(stateDir);
-    expect(state?.authMode).toBe("api_key");
-    expect(state?.gatewayUrl).toBe("https://gw.example.com");
-  });
-
-  it("returns failed when no gateway URL is resolvable", async () => {
-    const hooks = await ActsisActiveLLMPlugin(makeInput());
-    const api = hooks.auth!.methods.find((m) => m.type === "api")!;
-    const authorize = api.authorize as (inputs?: Record<string, string>) => Promise<{ type: string }>;
-
-    const result = await authorize({});
-
-    expect(result.type).toBe("failed");
-  });
-});
-
-describe("auth loader", () => {
-  let stateDir: string;
-  const savedEnv: { url?: string; stateDir?: string } = {};
-
-  beforeEach(async () => {
-    stateDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-test-"));
-    savedEnv.url = process.env.ACTSIS_LITELLM_URL;
-    savedEnv.stateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+  it("falls back to the stored state gatewayUrl when env and options are absent", async () => {
+    const original = process.env.ACTSIS_LITELLM_URL;
+    const originalStateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-resolve-"));
     delete process.env.ACTSIS_LITELLM_URL;
-    process.env.ACTSIS_LITELLM_STATE_DIR = stateDir;
-  });
-
-  afterEach(async () => {
-    if (savedEnv.url !== undefined) {
-      process.env.ACTSIS_LITELLM_URL = savedEnv.url;
-    } else {
-      delete process.env.ACTSIS_LITELLM_URL;
+    process.env.ACTSIS_LITELLM_STATE_DIR = tmpDir;
+    try {
+      await writePluginState(
+        { version: 1, gatewayUrl: "https://statefile.example.com", providerId: "actsis-litellm" },
+        tmpDir,
+      );
+      const closure = await resolveClosure();
+      expect(closure.baseUrl).toBe("https://statefile.example.com");
+    } finally {
+      if (original !== undefined) process.env.ACTSIS_LITELLM_URL = original;
+      else delete process.env.ACTSIS_LITELLM_URL;
+      if (originalStateDir !== undefined) process.env.ACTSIS_LITELLM_STATE_DIR = originalStateDir;
+      else delete process.env.ACTSIS_LITELLM_STATE_DIR;
+      await rm(tmpDir, { recursive: true, force: true });
     }
-    if (savedEnv.stateDir !== undefined) {
-      process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
-    } else {
-      delete process.env.ACTSIS_LITELLM_STATE_DIR;
-    }
-    await rm(stateDir, { recursive: true, force: true });
-  });
-
-  it("returns an empty object when getAuth throws", async () => {
-    const hooks = await ActsisActiveLLMPlugin(makeInput(), { url: "https://gw.example.com" });
-    const loader = hooks.auth!.loader!;
-    const result = await loader(async () => {
-      throw new Error("no auth");
-    });
-    expect(result).toEqual({});
-  });
-
-  it("returns apiKey, baseURL and fetch for api auth", async () => {
-    const hooks = await ActsisActiveLLMPlugin(makeInput(), { url: "https://gw.example.com" });
-    const loader = hooks.auth!.loader!;
-    const auth: Auth = { type: "api", key: "sk-test" };
-    const result = await loader(async () => auth);
-    expect(result.apiKey).toBe("sk-test");
-    expect(result.baseURL).toBe("https://gw.example.com/v1");
-    expect(result.fetch).toBeDefined();
-  });
-
-  it("returns apiKey and fetch for oauth auth", async () => {
-    const hooks = await ActsisActiveLLMPlugin(makeInput(), { url: "https://gw.example.com" });
-    const loader = hooks.auth!.loader!;
-    const auth: Auth = { type: "oauth", access: "access-1", refresh: "refresh-1", expires: Date.now() + 3600_000 };
-    const result = await loader(async () => auth);
-    expect(result.apiKey).toBe("");
-    expect(result.baseURL).toBe("https://gw.example.com/v1");
-    expect(result.fetch).toBeDefined();
-  });
-
-  it("prefers the options URL over a state file gatewayUrl for the same provider", async () => {
-    await writePluginState(
-      { version: 1, gatewayUrl: "http://statefile.invalid", providerId: "actsis-litellm" },
-      stateDir,
-    );
-    const hooks = await ActsisActiveLLMPlugin(makeInput(), { url: "https://options.invalid" });
-    const loader = hooks.auth!.loader!;
-    const auth: Auth = { type: "api", key: "sk-test" };
-    const result = await loader(async () => auth);
-    expect(result.baseURL).toBe("https://options.invalid/v1");
   });
 });
 
@@ -305,7 +244,325 @@ describe("makeAuthFetch", () => {
   });
 });
 
-describe("event hook budget refresh", () => {
+describe("buildProviderInfo", () => {
+  it("builds a v2 Provider.Info bound to the integration", () => {
+    const info = buildProviderInfo(makeClosure()) as unknown as Record<string, unknown>;
+
+    expect(info.id).toBe("actsis-litellm");
+    expect(info.name).toBe("Actsis LiteLLM");
+    expect(info.activation).toBe("enabled");
+    expect(info.package).toBe("@opencode/ai/providers/openai-compatible");
+    expect(info.integrationID).toBe("actsis-litellm");
+    expect(info.settings).toEqual({ baseURL: "https://gw.example.com/v1" });
+  });
+
+  it("uses an empty baseURL when no gateway URL is resolved", () => {
+    const info = buildProviderInfo(makeClosure({ baseUrl: null })) as unknown as Record<string, unknown>;
+    expect(info.settings).toEqual({ baseURL: "" });
+  });
+});
+
+describe("mapModelConfigToInfo", () => {
+  it("maps a catalog config onto Model.Info.default with overrides", () => {
+    const config = makeModelConfig({
+      name: "gpt-4",
+      modalities: { input: ["text", "image"], output: ["text"] },
+      cost: {
+        input: 2.5,
+        output: 10,
+        cache_read: 1.25,
+        cache_write: 5,
+        tiers: [
+          { input: 5, output: 20, cache: { read: 2, write: 10 }, tier: { type: "context", size: 128_000 } },
+        ],
+      },
+      variants: { high: { reasoningEffort: "high" } },
+    });
+
+    const info = mapModelConfigToInfo("actsis-litellm", "gpt-4", config) as unknown as Record<string, unknown>;
+
+    expect(info.id).toBe("gpt-4");
+    expect(info.modelID).toBe("gpt-4");
+    expect(info.providerID).toBe("actsis-litellm");
+    expect(info.name).toBe("gpt-4");
+    expect(info.status).toBe("active");
+    expect(info.enabled).toBe(true);
+    expect(info.limit).toEqual({ context: 128_000, output: 16_384 });
+    expect(info.capabilities).toEqual({ tools: true, input: ["text", "image"], output: ["text"] });
+    expect(info.cost).toEqual([
+      { input: 2.5, output: 10, cache: { read: 1.25, write: 5 } },
+      {
+        tier: { type: "context", size: 128_000 },
+        input: 5,
+        output: 20,
+        cache: { read: 2, write: 10 },
+      },
+    ]);
+    expect(info.variants).toEqual([
+      { id: "high", settings: { reasoningEffort: "high" } },
+    ]);
+  });
+
+  it("falls back to Model.Info defaults for missing cost, modalities, and limits", () => {
+    const config = makeModelConfig({
+      name: "small",
+      tool_call: false,
+      limit: { context: 200_000, output: 32_000 },
+    });
+    const info = mapModelConfigToInfo("actsis-litellm", "small", config) as unknown as Record<string, unknown>;
+
+    expect(info.name).toBe("small");
+    expect(info.capabilities).toEqual({ tools: false, input: ["text"], output: ["text"] });
+    expect(info.cost).toEqual([
+      { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    ]);
+    expect(info.variants).toEqual([]);
+    expect(info.limit).toEqual({ context: 200_000, output: 32_000 });
+  });
+});
+
+describe("buildCommandDefinitions", () => {
+  it("exposes all four commands in v2 shape (name/description/template)", () => {
+    const commands = buildCommandDefinitions();
+    expect(commands.map((c) => c.name)).toEqual([
+      "actsis-litellm-status",
+      "actsis-litellm-models",
+      "actsis-litellm-budget",
+      "actsis-litellm-logout",
+    ]);
+    expect(commands[0].template).toContain("actsis_litellm_status tool");
+    expect(commands[1].description).toContain("Force-sync");
+    expect(commands[2].template).toContain("actsis_litellm_budget tool");
+    expect(commands[3].description).toContain("Revoke");
+  });
+});
+
+describe("normalizeThinkingOption", () => {
+  it("maps string values", () => {
+    const off: Record<string, unknown> = { thinking: "off" };
+    normalizeThinkingOption(off);
+    expect(off.thinking).toEqual({ type: "disabled" });
+
+    const disabled: Record<string, unknown> = { thinking: "DISABLED" };
+    normalizeThinkingOption(disabled);
+    expect(disabled.thinking).toEqual({ type: "disabled" });
+
+    const adaptive: Record<string, unknown> = { thinking: "on" };
+    normalizeThinkingOption(adaptive);
+    expect(adaptive.thinking).toEqual({ type: "adaptive" });
+  });
+
+  it("repairs invalid object types and preserves known ones", () => {
+    const invalid: Record<string, unknown> = { thinking: { type: "bogus" } };
+    normalizeThinkingOption(invalid);
+    expect(invalid.thinking).toEqual({ type: "adaptive" });
+
+    const disabled: Record<string, unknown> = { thinking: { type: "disabled" } };
+    normalizeThinkingOption(disabled);
+    expect(disabled.thinking).toEqual({ type: "disabled" });
+
+    const adaptive: Record<string, unknown> = { thinking: { type: "adaptive" } };
+    normalizeThinkingOption(adaptive);
+    expect(adaptive.thinking).toEqual({ type: "adaptive" });
+  });
+
+  it("leaves other shapes untouched", () => {
+    const untouched: Record<string, unknown> = {};
+    normalizeThinkingOption(untouched);
+    expect(untouched.thinking).toBeUndefined();
+  });
+});
+
+describe("buildApiKeyMethodRegistration", () => {
+  it("registers a native key method with a gateway URL form field", () => {
+    const registration = buildApiKeyMethodRegistration(makeClosure()) as unknown as Record<string, unknown>;
+    expect(registration.integrationID).toBe("actsis-litellm");
+
+    const method = registration.method as Record<string, unknown>;
+    expect(method.type).toBe("key");
+    expect(method.label).toBe("Use an API key");
+
+    const form = method.form as Array<Record<string, unknown>>;
+    expect(form).toHaveLength(1);
+    expect(form[0].type).toBe("string");
+    expect(form[0].key).toBe("gatewayUrl");
+    expect(form[0].format).toBe("uri");
+  });
+});
+
+describe("OAuth method registration", () => {
+  let tmpDir: string;
+  const savedEnv: { url?: string; stateDir?: string; dataHome?: string } = {};
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-oauth-test-"));
+    savedEnv.url = process.env.ACTSIS_LITELLM_URL;
+    savedEnv.stateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+    savedEnv.dataHome = process.env.XDG_DATA_HOME;
+    delete process.env.ACTSIS_LITELLM_URL;
+    process.env.ACTSIS_LITELLM_STATE_DIR = tmpDir;
+    // Isolation: any state write that escapes the explicit dir must land in
+    // tmpDir, never in the real default state directory.
+    process.env.XDG_DATA_HOME = tmpDir;
+  });
+
+  afterEach(async () => {
+    if (savedEnv.url !== undefined) process.env.ACTSIS_LITELLM_URL = savedEnv.url;
+    else delete process.env.ACTSIS_LITELLM_URL;
+    if (savedEnv.stateDir !== undefined) process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
+    else delete process.env.ACTSIS_LITELLM_STATE_DIR;
+    if (savedEnv.dataHome !== undefined) process.env.XDG_DATA_HOME = savedEnv.dataHome;
+    else delete process.env.XDG_DATA_HOME;
+    vi.unstubAllGlobals();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  function stubGatewayFetch() {
+    const realFetch = globalThis.fetch;
+    return vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      // The loopback callback server is real; let browser redirects through.
+      if (url.hostname === "127.0.0.1" || url.hostname === "localhost") {
+        return realFetch(input, init);
+      }
+      if (url.pathname === "/.well-known/litellm-cli-auth") {
+        return new Response(
+          JSON.stringify({
+            contract_version: 1,
+            issuer: "https://gw.example.com",
+            authorization_endpoint: "https://gw.example.com/authorize",
+            token_endpoint: "https://gw.example.com/token",
+            registration_endpoint: "https://gw.example.com/register",
+            revocation_endpoint: "https://gw.example.com/revoke",
+            resource: "https://gw.example.com",
+            code_challenge_methods_supported: ["S256"],
+            grant_types_supported: ["authorization_code", "refresh_token"],
+            token_endpoint_auth_methods_supported: ["none"],
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.pathname === "/register") {
+        return new Response(JSON.stringify({ client_id: "client-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.pathname === "/token") {
+        return new Response(
+          JSON.stringify({
+            access_token: "access-1",
+            token_type: "Bearer",
+            expires_in: 3600,
+            refresh_token: "refresh-1",
+            user_id: "user-1",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+  }
+
+  it("exposes an oauth method with a gateway URL form field", () => {
+    const registration = buildOAuthMethodRegistration(makeClosure()) as unknown as Record<string, unknown>;
+    expect(registration.integrationID).toBe("actsis-litellm");
+
+    const method = registration.method as Record<string, unknown>;
+    expect(method.type).toBe("oauth");
+    expect(method.label).toBe("Sign in with SSO (browser)");
+    const form = method.form as Array<Record<string, unknown>>;
+    expect(form[0].key).toBe("gatewayUrl");
+  });
+
+  it("authorize returns an auto mode authorization completing as a v2 OAuth credential", async () => {
+    vi.stubGlobal("fetch", stubGatewayFetch());
+    const registration = buildOAuthMethodRegistration(
+      makeClosure({ stateDir: tmpDir }),
+    ) as unknown as {
+      authorize: (answer: Record<string, unknown>) => Promise<{
+        url: string;
+        instructions: string;
+        mode: "auto";
+        callback: Promise<Record<string, unknown>>;
+      }>;
+    };
+
+    const authorization = await registration.authorize({ gatewayUrl: "https://gw.example.com" });
+
+    expect(authorization.mode).toBe("auto");
+    expect(authorization.url).toContain("https://gw.example.com/authorize");
+    expect(authorization.instructions).toContain("browser");
+
+    const authorizeUrl = new URL(authorization.url);
+    const redirectUri = authorizeUrl.searchParams.get("redirect_uri")!;
+    const state = authorizeUrl.searchParams.get("state")!;
+    await fetch(`${redirectUri}?code=AUTHCODE&state=${state}`, { method: "POST" });
+
+    const credential = await authorization.callback;
+    expect(credential).toMatchObject({
+      type: "oauth",
+      methodID: "sso-browser",
+      access: "access-1",
+      refresh: "refresh-1",
+    });
+    expect((credential.expires as number)).toBeGreaterThan(Date.now());
+
+    const state_ = await readPluginState(tmpDir);
+    expect(state_?.authMode).toBe("oauth");
+    expect(state_?.providerId).toBe("actsis-litellm");
+    expect(state_?.gatewayUrl).toBe("https://gw.example.com");
+  });
+
+  it("runLoginFlow state write never touches the default state directory", async () => {
+    // Regression: an aborted/login-callback state write routed through an
+    // undefined dir used to land in the real ~/.local/share state.json.
+    // With XDG_DATA_HOME pointed at tmpDir, the "default" dir is inside tmpDir,
+    // so a write escaping the closure's stateDir would create that file.
+    const defaultStateFile = path.join(
+      tmpDir,
+      "opencode",
+      "actsis-litellm",
+      "state.json",
+    );
+
+    vi.stubGlobal("fetch", stubGatewayFetch());
+    const registration = buildOAuthMethodRegistration(
+      makeClosure({ stateDir: tmpDir }),
+    ) as unknown as {
+      authorize: (answer: Record<string, unknown>) => Promise<{
+        url: string;
+        mode: "auto";
+        callback: Promise<Record<string, unknown>>;
+      }>;
+    };
+
+    const authorization = await registration.authorize({ gatewayUrl: "https://gw.example.com" });
+    const authorizeUrl = new URL(authorization.url);
+    const redirectUri = authorizeUrl.searchParams.get("redirect_uri")!;
+    const state = authorizeUrl.searchParams.get("state")!;
+    await fetch(`${redirectUri}?code=AUTHCODE&state=${state}`, { method: "POST" });
+    await authorization.callback;
+
+    // Only the tmpDir state file exists; the default-path file must not.
+    expect(await stat(defaultStateFile).then(
+      () => true,
+      () => false,
+    )).toBe(false);
+    expect((await readPluginState(tmpDir))?.providerId).toBe("actsis-litellm");
+  });
+
+  it("authorize rejects when no gateway URL is resolvable", async () => {
+    const registration = buildOAuthMethodRegistration(
+      makeClosure({ baseUrl: null, stateDir: tmpDir }),
+    ) as unknown as {
+      authorize: (answer: Record<string, unknown>) => Promise<unknown>;
+    };
+    await expect(registration.authorize({})).rejects.toThrow(/Gateway URL not configured/);
+  });
+});
+
+describe("runBudgetRefresh", () => {
   let tmpDir: string;
   const savedEnv: { stateDir?: string; dataHome?: string } = {};
 
@@ -320,7 +577,6 @@ describe("event hook budget refresh", () => {
       { version: 1, gatewayUrl: "https://gw.example.com", providerId: "actsis-litellm" },
       tmpDir,
     );
-    const { writeFile, mkdir } = await import("node:fs/promises");
     await mkdir(path.dirname(defaultAuthPath()), { recursive: true });
     await writeFile(
       defaultAuthPath(),
@@ -329,16 +585,10 @@ describe("event hook budget refresh", () => {
   });
 
   afterEach(async () => {
-    if (savedEnv.stateDir !== undefined) {
-      process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
-    } else {
-      delete process.env.ACTSIS_LITELLM_STATE_DIR;
-    }
-    if (savedEnv.dataHome !== undefined) {
-      process.env.XDG_DATA_HOME = savedEnv.dataHome;
-    } else {
-      delete process.env.XDG_DATA_HOME;
-    }
+    if (savedEnv.stateDir !== undefined) process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
+    else delete process.env.ACTSIS_LITELLM_STATE_DIR;
+    if (savedEnv.dataHome !== undefined) process.env.XDG_DATA_HOME = savedEnv.dataHome;
+    else delete process.env.XDG_DATA_HOME;
     await rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -354,11 +604,11 @@ describe("event hook budget refresh", () => {
     }));
   }
 
-  it("persists a budget snapshot on session.idle", async () => {
+  it("persists a budget snapshot (session.idle refresh)", async () => {
     stubBudgetFetch(7.89);
-    const hooks = await ActsisActiveLLMPlugin(makeInput());
+    const closure = await resolveClosure();
 
-    await hooks.event!({ event: { type: "session.idle", properties: { sessionID: "s1" } } as never });
+    await expect(runBudgetRefresh(closure)).resolves.toBeUndefined();
 
     const state = await readPluginState(tmpDir);
     expect(state?.lastBudgetSnapshot?.primary.spend).toBe(7.89);
@@ -367,11 +617,12 @@ describe("event hook budget refresh", () => {
     vi.unstubAllGlobals();
   });
 
-  it("ignores non-idle events", async () => {
+  it("does nothing without a gateway URL or credential", async () => {
     stubBudgetFetch(7.89);
-    const hooks = await ActsisActiveLLMPlugin(makeInput());
+    await writePluginState({ version: 1 }, tmpDir);
+    const closure = await resolveClosure();
 
-    await hooks.event!({ event: { type: "session.error", properties: {} } as never });
+    await runBudgetRefresh(closure);
 
     const state = await readPluginState(tmpDir);
     expect(state?.lastBudgetSnapshot).toBeUndefined();
@@ -382,11 +633,9 @@ describe("event hook budget refresh", () => {
     vi.stubGlobal("fetch", vi.fn(async () => {
       throw new Error("network down");
     }));
-    const hooks = await ActsisActiveLLMPlugin(makeInput());
+    const closure = await resolveClosure();
 
-    await expect(
-      hooks.event!({ event: { type: "session.idle", properties: { sessionID: "s1" } } as never }),
-    ).resolves.toBeUndefined();
+    await expect(runBudgetRefresh(closure)).resolves.toBeUndefined();
 
     const state = await readPluginState(tmpDir);
     expect(state?.lastBudgetSnapshot).toBeUndefined();
@@ -394,27 +643,309 @@ describe("event hook budget refresh", () => {
   });
 });
 
+describe("buildInitialModels", () => {
+  let tmpDir: string;
+  const savedEnv: { url?: string; stateDir?: string; dataHome?: string } = {};
 
-describe("resolveClosure", () => {
-  it("reads env URL over options and stored URL", async () => {
-    const original = process.env.ACTSIS_LITELLM_URL;
-    process.env.ACTSIS_LITELLM_URL = "https://env.example.com";
-    try {
-      const closure = await resolveClosure(makeInput(), { url: "https://opt.example.com" });
-      expect(closure.baseUrl).toBe("https://env.example.com");
-    } finally {
-      process.env.ACTSIS_LITELLM_URL = original;
-    }
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-models-test-"));
+    savedEnv.url = process.env.ACTSIS_LITELLM_URL;
+    savedEnv.stateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+    savedEnv.dataHome = process.env.XDG_DATA_HOME;
+    delete process.env.ACTSIS_LITELLM_URL;
+    process.env.ACTSIS_LITELLM_STATE_DIR = tmpDir;
+    process.env.XDG_DATA_HOME = tmpDir;
+    await mkdir(path.dirname(defaultAuthPath()), { recursive: true });
   });
 
-  it("falls back to options URL when env is absent", async () => {
-    const original = process.env.ACTSIS_LITELLM_URL;
+  afterEach(async () => {
+    if (savedEnv.url !== undefined) process.env.ACTSIS_LITELLM_URL = savedEnv.url;
+    else delete process.env.ACTSIS_LITELLM_URL;
+    if (savedEnv.stateDir !== undefined) process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
+    else delete process.env.ACTSIS_LITELLM_STATE_DIR;
+    if (savedEnv.dataHome !== undefined) process.env.XDG_DATA_HOME = savedEnv.dataHome;
+    else delete process.env.XDG_DATA_HOME;
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("fetches the catalog when a credential exists and saves the cache", async () => {
+    await writeFile(
+      defaultAuthPath(),
+      JSON.stringify({ "actsis-litellm": { type: "api", key: "sk-test" } }),
+    );
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/models") {
+        return new Response(
+          JSON.stringify({ data: [{ id: "gpt-4", mode: "chat" }] }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.pathname === "/v1/model/info") {
+        return new Response(JSON.stringify([]), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }));
+
+    const closure = makeClosure({ stateDir: tmpDir, authPath: defaultAuthPath() });
+    const models = await buildInitialModels(closure);
+
+    expect(Object.keys(models)).toEqual(["gpt-4"]);
+    expect(models["gpt-4"].name).toBe("gpt-4");
+    vi.unstubAllGlobals();
+  });
+
+  it("falls back to the cached catalog when no credential is available", async () => {
+    await writeFile(
+      path.join(tmpDir, "models-cache.json"),
+      JSON.stringify({
+        version: 2,
+        fetchedAt: Date.now(),
+        models: { cached: makeModelConfig({ name: "cached" }) },
+      }),
+    );
+
+    const closure = makeClosure({ stateDir: tmpDir, authPath: defaultAuthPath() });
+    const models = await buildInitialModels(closure);
+
+    expect(Object.keys(models)).toEqual(["cached"]);
+  });
+
+  it("falls back to the cache when the fresh fetch fails", async () => {
+    await writeFile(
+      defaultAuthPath(),
+      JSON.stringify({ "actsis-litellm": { type: "api", key: "sk-test" } }),
+    );
+    await writeFile(
+      path.join(tmpDir, "models-cache.json"),
+      JSON.stringify({
+        version: 2,
+        fetchedAt: Date.now(),
+        models: { cached: makeModelConfig({ name: "cached" }) },
+      }),
+    );
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      throw new Error("network down");
+    }));
+
+    const closure = makeClosure({ stateDir: tmpDir, authPath: defaultAuthPath() });
+    const models = await buildInitialModels(closure);
+
+    expect(Object.keys(models)).toEqual(["cached"]);
+    vi.unstubAllGlobals();
+  });
+});
+
+describe("server plugin (v2 wiring)", () => {
+  let tmpDir: string;
+  const savedEnv: { url?: string; stateDir?: string; dataHome?: string } = {};
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-setup-test-"));
+    savedEnv.url = process.env.ACTSIS_LITELLM_URL;
+    savedEnv.stateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+    savedEnv.dataHome = process.env.XDG_DATA_HOME;
     delete process.env.ACTSIS_LITELLM_URL;
-    try {
-      const closure = await resolveClosure(makeInput(), { url: "https://opt.example.com" });
-      expect(closure.baseUrl).toBe("https://opt.example.com");
-    } finally {
-      if (original !== undefined) process.env.ACTSIS_LITELLM_URL = original;
+    process.env.ACTSIS_LITELLM_STATE_DIR = tmpDir;
+    process.env.XDG_DATA_HOME = tmpDir;
+  });
+
+  afterEach(async () => {
+    if (savedEnv.url !== undefined) process.env.ACTSIS_LITELLM_URL = savedEnv.url;
+    else delete process.env.ACTSIS_LITELLM_URL;
+    if (savedEnv.stateDir !== undefined) process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
+    else delete process.env.ACTSIS_LITELLM_STATE_DIR;
+    if (savedEnv.dataHome !== undefined) process.env.XDG_DATA_HOME = savedEnv.dataHome;
+    else delete process.env.XDG_DATA_HOME;
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("registers provider, tools, commands, integration methods, and session hooks", async () => {
+    const { ctx, providers, tools, commands, methods, hooks } = makeFakeContext();
+    const cleanup = await serverPlugin.setup(ctx as never);
+
+    expect(serverPlugin.id).toBe("actsis-litellm");
+    expect(providers).toHaveLength(1);
+    expect(providers[0].info.integrationID).toBe("actsis-litellm");
+    expect(providers[0].info.package).toBe("@opencode/ai/providers/openai-compatible");
+
+    const toolNames = tools.map((t) => t.name);
+    for (const name of [
+      "actsis_litellm_status",
+      "actsis_litellm_budget",
+      "actsis_litellm_models",
+      "actsis_litellm_logout",
+    ]) {
+      expect(toolNames).toContain(name);
     }
+
+    expect(commands.map((c) => c.name)).toEqual([
+      "actsis-litellm-status",
+      "actsis-litellm-models",
+      "actsis-litellm-budget",
+      "actsis-litellm-logout",
+    ]);
+
+    expect(methods).toHaveLength(2);
+
+    for (const hookName of ["model.request", "context", "http.response"]) {
+      expect(hooks[hookName].options?.providerID).toBe("actsis-litellm");
+    }
+
+    await cleanup?.();
+  });
+
+  it("tools are registered with JSON Schema input and {content} results", async () => {
+    const { ctx, tools } = makeFakeContext();
+    await serverPlugin.setup(ctx as never);
+
+    const status = tools.find((t) => t.name === "actsis_litellm_status") as Record<string, unknown>;
+    expect(status.description).toContain("gateway status");
+    expect((status.input as Record<string, unknown>).type).toBe("object");
+    expect(typeof status.execute).toBe("function");
+
+    const result = await (status.execute as (input: unknown, ctx: unknown) => Promise<{ content: string }>)({}, undefined);
+    expect(result.content).toContain("Provider: actsis-litellm");
+  });
+
+  it("the model.request hook injects the litellm session header", async () => {
+    const { ctx, hooks } = makeFakeContext();
+    await serverPlugin.setup(ctx as never);
+
+    const headers: Record<string, string> = {};
+    await hooks["model.request"].callback({
+      sessionID: "s1",
+      headers,
+      model: { providerID: "actsis-litellm", modelID: "gpt-4" },
+    });
+    expect(headers["X-Litellm-Session-ID"]).toBe("s1");
+  });
+
+  it("commands submit the tool prompt through ctx.session.prompt", async () => {
+    const { ctx, commands, sessionPrompt } = makeFakeContext();
+    await serverPlugin.setup(ctx as never);
+
+    await commands[0].execute({ sessionID: "s1", delivery: "steer" });
+    expect(sessionPrompt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionID: "s1",
+        text: expect.stringContaining("actsis_litellm_status"),
+        delivery: "steer",
+      }),
+    );
+  });
+
+  it("the session.idle event loop triggers a budget refresh", async () => {
+    await writePluginState(
+      { version: 1, gatewayUrl: "https://gw.example.com", providerId: "actsis-litellm" },
+      tmpDir,
+    );
+    await mkdir(path.dirname(defaultAuthPath()), { recursive: true });
+    await writeFile(
+      defaultAuthPath(),
+      JSON.stringify({ "actsis-litellm": { type: "api", key: "sk-test" } }),
+    );
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: 3.21, max_budget: 100 }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }));
+
+    // Event stream that emits one session.idle then closes.
+    const { ctx } = makeFakeContext();
+    const idleEvent = { type: "session.idle", data: { sessionID: "s1" } } as unknown;
+    (ctx.event as unknown as { subscribe: () => AsyncIterable<unknown> }).subscribe = () =>
+      (async function* () {
+        yield idleEvent;
+      })();
+    const setup = await serverPlugin.setup(ctx as never);
+
+    // Allow the detached event loop to process the event.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await setup?.();
+
+    const state = await readPluginState(tmpDir);
+    expect(state?.lastBudgetSnapshot?.primary.spend).toBe(3.21);
+    expect(state?.budgetRefreshedAt).toEqual(expect.any(Number));
+    vi.unstubAllGlobals();
+  });
+});
+describe("triangulation: alternate v2 wiring cases", () => {
+  const savedEnv: { url?: string; stateDir?: string; dataHome?: string } = {};
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-tri-"));
+    savedEnv.url = process.env.ACTSIS_LITELLM_URL;
+    savedEnv.stateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+    savedEnv.dataHome = process.env.XDG_DATA_HOME;
+    delete process.env.ACTSIS_LITELLM_URL;
+    process.env.ACTSIS_LITELLM_STATE_DIR = tmpDir;
+    process.env.XDG_DATA_HOME = tmpDir;
+  });
+
+  afterEach(async () => {
+    if (savedEnv.url !== undefined) process.env.ACTSIS_LITELLM_URL = savedEnv.url;
+    else delete process.env.ACTSIS_LITELLM_URL;
+    if (savedEnv.stateDir !== undefined) process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
+    else delete process.env.ACTSIS_LITELLM_STATE_DIR;
+    if (savedEnv.dataHome !== undefined) process.env.XDG_DATA_HOME = savedEnv.dataHome;
+    else delete process.env.XDG_DATA_HOME;
+    vi.unstubAllGlobals();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  it("options.providerId overrides the provider/integration ID end to end", async () => {
+    const { ctx, providers, commands, methods } = makeFakeContext({ providerId: "custom-gw" });
+    await serverPlugin.setup(ctx as never);
+
+    expect(providers[0].info.id).toBe("custom-gw");
+    expect(providers[0].info.integrationID).toBe("custom-gw");
+    expect(methods.every((m: Record<string, unknown>) => m.integrationID === "custom-gw")).toBe(true);
+    expect(commands.every((c) => c.name.startsWith("actsis-litellm-"))).toBe(true);
+  });
+
+  it("options.requestTimeoutMs and catalogTtlMinutes flow into the closure", async () => {
+    const closure = await resolveClosure({ requestTimeoutMs: 1234, catalogTtlMinutes: 1 });
+    expect(closure.requestTimeoutMs).toBe(1234);
+    expect(closure.catalogTtlMs).toBe(60_000);
+  });
+
+  it("cleanup aborts the event loop without throwing", async () => {
+    const { ctx } = makeFakeContext();
+    const cleanup = await serverPlugin.setup(ctx as never);
+    await expect(cleanup?.()).resolves.toBeUndefined();
+    await expect(cleanup?.()).resolves.toBeUndefined();
+  });
+
+  it("the context hook normalizes v1 string thinking values", async () => {
+    const { ctx, hooks } = makeFakeContext();
+    await serverPlugin.setup(ctx as never);
+
+    const options: Record<string, unknown> = { thinking: "off" };
+    await hooks["context"].callback({ options });
+    expect(options.thinking).toEqual({ type: "disabled" });
+  });
+
+  it("buildCommandDefinitions skips already-registered command names", () => {
+    const commands = buildCommandDefinitions([{ name: "actsis-litellm-status" }]);
+    expect(commands.map((c) => c.name)).toEqual([
+      "actsis-litellm-models",
+      "actsis-litellm-budget",
+      "actsis-litellm-logout",
+    ]);
+  });
+
+  it("buildProviderInfo strips a trailing /v1 from the resolved base URL", async () => {
+    const closure = await resolveClosure({ url: "https://gw.example.com/v1" });
+    expect(closure.baseUrl).toBe("https://gw.example.com");
+    const info = buildProviderInfo(closure) as unknown as { settings: { baseURL: string } };
+    expect(info.settings.baseURL).toBe("https://gw.example.com/v1");
   });
 });

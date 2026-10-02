@@ -10,7 +10,7 @@ export default defineConfig({
   target: "es2022",
   splitting: false,
   dts: false,
-  external: ["solid-js", "@opentui/core", "@opentui/solid", "@opencode-ai/plugin"],
+  external: ["solid-js", "@opentui/core", "@opentui/solid", "@opencode/plugin", "@opencode/schema"],
   esbuildPlugins: [solidPlugin({ solid: { moduleName: "@opentui/solid", generate: "universal" } })],
   clean: false,
   sourcemap: false,

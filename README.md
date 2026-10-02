@@ -21,12 +21,12 @@ plugin and the TUI budget widget are registered separately):
 ```json
 // ~/.config/opencode/opencode.json (server plugin)
 {
-  "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
+  "plugins": ["github:ACTSIS/opencode-actsis-litellm"]
 }
 
-// ~/.config/opencode/tui.json (budget widget)
+// ~/.config/opencode/cli.json (budget widget)
 {
-  "plugin": ["github:ACTSIS/opencode-actsis-litellm"]
+  "plugins": ["github:ACTSIS/opencode-actsis-litellm"]
 }
 ```
 
@@ -68,21 +68,24 @@ precedence (highest first):
 | Priority | Source | Example |
 |----------|--------|---------|
 | 1 | Environment variable | `export ACTSIS_LITELLM_URL=https://your-gateway.example.com` |
-| 2 | Plugin options (tuple form in `opencode.json`) | `["opencode-actsis-litellm", { "url": "https://your-gateway.example.com" }]` |
+| 2 | Plugin options (object form in `opencode.json`) | `{ "package": "opencode-actsis-litellm", "options": { "url": "https://your-gateway.example.com" } }` |
 | 3 | Stored plugin state (written by a previous login) | `~/.local/share/opencode/actsis-litellm/state.json` |
 | 4 | Interactive prompt during `opencode auth login` | Gateway URL prompt with validation |
 
-Plugin options use the `[package, options]` tuple form:
+Plugin options use the `{ package, options }` object form of the `plugins`
+(array) config key:
 
 ```json
 {
-  "plugin": [
-    "git:github.com/ACTSIS/opencode-actsis-litellm",
+  "plugins": [
     {
-      "url": "https://your-gateway.example.com",
-      "providerId": "actsis-litellm",
-      "catalogTtlMinutes": 15,
-      "requestTimeoutMs": 30000
+      "package": "git:github.com/ACTSIS/opencode-actsis-litellm",
+      "options": {
+        "url": "https://your-gateway.example.com",
+        "providerId": "actsis-litellm",
+        "catalogTtlMinutes": 15,
+        "requestTimeoutMs": 30000
+      }
     }
   ]
 }
@@ -141,8 +144,8 @@ tool and summarize the result, so they work in both the TUI and server mode.
 ## TUI widget
 
 An optional TUI widget renders the budget gauge in the OpenCode sidebar
-footer. Enable it by adding the package spec to the `plugin` array of
-`~/.config/opencode/tui.json` — **in addition to** the `opencode.json`
+footer. Enable it by adding the package spec to the `plugins` array of
+`~/.config/opencode/cli.json` — **in addition to** the `opencode.json`
 entry; both config files are required (see
 [docs/installation.md](docs/installation.md)). The widget requires a TUI
 build with plugin support and works only with the committed `dist/` bundles:

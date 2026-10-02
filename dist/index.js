@@ -1,3 +1,6 @@
+// src/plugin.ts
+import { Plugin, Provider as ProviderSchema, Model as ModelSchema } from "@opencode/plugin";
+
 // src/errors.ts
 var ActsisLiteLLMError = class extends Error {
   code;
@@ -723,17 +726,20 @@ async function runLoginFlow(config, discovery, notices, fetchImpl = globalThis.f
           fetchImpl
         );
         const expires = Date.now() + Math.max(tokenResponse.expiresIn - 300, 60) * 1e3;
-        await updatePluginState({
-          gatewayUrl: discovery.issuer,
-          providerId: void 0,
-          authMode: "oauth",
-          clientId,
-          tokenEndpoint: discovery.tokenEndpoint,
-          revocationEndpoint: discovery.revocationEndpoint,
-          resource: discovery.resource,
-          schemeUpgraded: notices?.schemeUpgraded,
-          savedAt: Date.now()
-        });
+        await updatePluginState(
+          {
+            gatewayUrl: discovery.issuer,
+            providerId: void 0,
+            authMode: "oauth",
+            clientId,
+            tokenEndpoint: discovery.tokenEndpoint,
+            revocationEndpoint: discovery.revocationEndpoint,
+            resource: discovery.resource,
+            schemeUpgraded: notices?.schemeUpgraded,
+            savedAt: Date.now()
+          },
+          config.stateDir
+        );
         return {
           type: "success",
           refresh: tokenResponse.refreshToken ?? "",
@@ -1533,28 +1539,322 @@ async function ensureFreshToken(credential, context) {
   return credential.access;
 }
 
+// src/tools.ts
+import path4 from "path";
+import os4 from "os";
+import { rm as rm3 } from "fs/promises";
+var DEFAULT_PLUGIN_DIR_NAME3 = "actsis-litellm";
+var DEFAULT_APP_DIR_NAME3 = "opencode";
+var DEFAULT_TIMEOUT_MS = 3e4;
+var CACHE_FILE_NAME2 = "models-cache.json";
+function defaultPluginDir3() {
+  const dataHome = process.env.XDG_DATA_HOME ? process.env.XDG_DATA_HOME : path4.join(os4.homedir(), ".local", "share");
+  return path4.join(dataHome, DEFAULT_APP_DIR_NAME3, DEFAULT_PLUGIN_DIR_NAME3);
+}
+function cachePath2(dir) {
+  return path4.join(dir ?? defaultPluginDir3(), CACHE_FILE_NAME2);
+}
+function formatExpiry(entry) {
+  if (!entry) return "never";
+  if (entry.type === "api") return "never";
+  if (!Number.isFinite(entry.expires)) return "never";
+  return new Date(entry.expires).toISOString();
+}
+var EMPTY_INPUT = { type: "object", properties: {}, additionalProperties: false };
+async function resolveToolToken(deps) {
+  const {
+    providerId,
+    stateDir,
+    authPath = defaultAuthPath(),
+    fetchImpl,
+    timeout = DEFAULT_TIMEOUT_MS
+  } = deps;
+  const state = await readPluginState(stateDir);
+  const entry = await readEntry(deps);
+  if (!entry) {
+    return { state, entry: null, token: null };
+  }
+  if (entry.type === "api") {
+    return { state, entry, token: entry.key };
+  }
+  const token = await ensureFreshToken(
+    { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+    {
+      state,
+      timeoutMs: timeout,
+      fetchImpl
+    }
+  );
+  return { state, entry, token: token || null };
+}
+async function readEntry(deps) {
+  if (deps.getCredential) {
+    try {
+      const cred = await deps.getCredential();
+      if (cred) {
+        const normalized = normalizeCredential(cred);
+        if (normalized) return normalized;
+      }
+    } catch {
+    }
+  }
+  return readAuthEntry(deps.authPath ?? defaultAuthPath(), deps.providerId);
+}
+function normalizeCredential(cred) {
+  if (cred.type === "oauth") {
+    if (typeof cred.access !== "string" || !cred.access) return null;
+    if (typeof cred.refresh !== "string" || !cred.refresh) return null;
+    if (typeof cred.expires !== "number") return null;
+    return { type: "oauth", access: cred.access, refresh: cred.refresh, expires: cred.expires };
+  }
+  if (cred.type === "key") {
+    if (typeof cred.key !== "string" || !cred.key) return null;
+    return { type: "api", key: cred.key };
+  }
+  return null;
+}
+function buildLitellmToolInfos(deps) {
+  const {
+    providerId,
+    stateDir,
+    authPath = defaultAuthPath(),
+    fetchImpl = globalThis.fetch,
+    timeout = DEFAULT_TIMEOUT_MS,
+    onRefreshed
+  } = deps;
+  const status = async () => {
+    const state = await readPluginState(stateDir);
+    const entry = await readEntry(deps);
+    const cached = await loadCachedModels(stateDir);
+    const age = await computeCacheAge(stateDir);
+    const gatewayUrl = state?.gatewayUrl ?? "not configured";
+    const ageText = age === null ? "none" : `${Math.floor(age / 6e4)}m ago`;
+    const cacheCount = cached ? Object.keys(cached).length : 0;
+    const authType = entry?.type ?? "none";
+    const authExpiry = formatExpiry(entry);
+    let budgetLines = ["Budget: unavailable"];
+    try {
+      if (entry && state?.gatewayUrl) {
+        const token = entry.type === "oauth" ? await ensureFreshToken(
+          { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+          {
+            state,
+            timeoutMs: timeout,
+            fetchImpl,
+            onRefreshed
+          }
+        ) : entry.key;
+        const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
+        await updatePluginState(
+          { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
+          stateDir
+        );
+        const primary = formatBudgetLine(snapshot.primary);
+        if (primary) {
+          budgetLines = [`Budget: ${primary}`];
+          if (snapshot.source === "user_info") {
+            for (const key of snapshot.ownKeys) {
+              const keyLine = formatBudgetLine(key);
+              if (keyLine) {
+                budgetLines.push(
+                  key.keyAlias ? `Key ${key.keyAlias}: ${keyLine}` : `Key: ${keyLine}`
+                );
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      if (err instanceof AuthError) {
+        budgetLines = ["Budget: Credential rejected \u2014 run /login again"];
+      } else {
+        const reason = err instanceof Error ? err.message : String(err);
+        const cachedSnapshot = state?.lastBudgetSnapshot;
+        const cachedAt = state?.budgetRefreshedAt;
+        const cachedLine = cachedSnapshot && typeof cachedAt === "number" ? formatBudgetLine(cachedSnapshot.primary) : null;
+        const cachedAgeSeconds = cachedSnapshot && typeof cachedAt === "number" ? Math.max(0, Math.floor((Date.now() - cachedAt) / 1e3)) : null;
+        budgetLines = [
+          `Budget unavailable: ${reason}`,
+          ...cachedLine && cachedAgeSeconds !== null ? [`Budget (cached ${cachedAgeSeconds}s ago): ${cachedLine}`] : []
+        ];
+      }
+    }
+    const lines = [
+      `Provider: ${providerId}`,
+      `Auth: ${authType} (expires ${authExpiry})`,
+      `Catalog: ${cacheCount} models cached (age ${ageText})`,
+      `Gateway URL: ${gatewayUrl}`,
+      ...budgetLines
+    ];
+    return lines.join("\n");
+  };
+  const budget = async () => {
+    const state = await readPluginState(stateDir);
+    const entry = await readEntry(deps);
+    if (!state || !entry) {
+      return "no credential stored \u2014 run /login";
+    }
+    if (!state.gatewayUrl) {
+      return "gateway URL not configured";
+    }
+    try {
+      const token = entry.type === "oauth" ? await ensureFreshToken(
+        { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+        {
+          state,
+          timeoutMs: timeout,
+          fetchImpl,
+          onRefreshed
+        }
+      ) : entry.key;
+      const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
+      await updatePluginState(
+        { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
+        stateDir
+      );
+      const text = formatBudgetStatus(snapshot.primary);
+      return text ?? "no spend data (spend null)";
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return err.message;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      const cachedLine = state.lastBudgetSnapshot && state.budgetRefreshedAt ? formatBudgetLine(state.lastBudgetSnapshot.primary) : null;
+      return `error: ${reason}${cachedLine ? ` (last known: ${cachedLine})` : ""}`;
+    }
+  };
+  const models = async () => {
+    const entry = await readEntry(deps);
+    if (!entry) {
+      return "Not signed in \u2014 run /login and choose ACTSIS LiteLLM.";
+    }
+    const state = await readPluginState(stateDir);
+    if (!state?.gatewayUrl) {
+      return "Gateway URL not configured.";
+    }
+    const token = entry.type === "oauth" ? entry.access : entry.key;
+    const previous = await loadCachedModels(stateDir);
+    const previousIds = previous ? Object.keys(previous) : [];
+    const previousSet = new Set(previousIds);
+    const fresh = await fetchCatalogModels(
+      {
+        baseUrl: state.gatewayUrl,
+        providerId,
+        catalogTtlMs: 0,
+        requestTimeoutMs: timeout
+      },
+      token,
+      void 0,
+      fetchImpl
+    );
+    const record = {};
+    for (const model of fresh) {
+      record[model.name] = model;
+    }
+    await saveCachedModels(record, stateDir);
+    const currentIds = Object.keys(record);
+    const added = currentIds.filter((id) => !previousSet.has(id)).length;
+    const removed = previousIds.filter((id) => !record[id]).length;
+    return `Model catalog synced: ${currentIds.length} models available (added ${added}, removed ${removed}). Restart OpenCode to see new models in the picker.`;
+  };
+  const logout = async () => {
+    const state = await readPluginState(stateDir);
+    const entry = await readEntry(deps);
+    if (entry?.type === "oauth" && entry.refresh && state?.tokenEndpoint && state?.clientId) {
+      try {
+        await revokeToken(
+          discoveryFromState(state),
+          { token: entry.refresh, clientId: state.clientId },
+          timeout,
+          fetchImpl
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.toLowerCase().includes("fetch")) {
+        }
+      }
+    }
+    await clearAuthEntry(authPath, providerId);
+    await writePluginState({ version: 1 }, stateDir);
+    try {
+      await rm3(cachePath2(stateDir), { force: true });
+    } catch {
+    }
+    return [
+      "Logged out. Local state and model cache cleared.",
+      "OpenCode still holds the integration credential; disconnect it via the native auth UI \u2014 the plugin has no API to delete it."
+    ].join("\n");
+  };
+  return [
+    {
+      name: "actsis_litellm_status",
+      description: "Show LiteLLM gateway status, credential state, and model cache age.",
+      input: EMPTY_INPUT,
+      async execute() {
+        return { content: await status() };
+      }
+    },
+    {
+      name: "actsis_litellm_budget",
+      description: "Force a budget refresh and report the exact outcome.",
+      input: EMPTY_INPUT,
+      async execute() {
+        return { content: await budget() };
+      }
+    },
+    {
+      name: "actsis_litellm_models",
+      description: "Force-sync the LiteLLM model catalog from the gateway.",
+      input: EMPTY_INPUT,
+      async execute() {
+        return { content: await models() };
+      }
+    },
+    {
+      name: "actsis_litellm_logout",
+      description: "Revoke LiteLLM credentials and clear local state.",
+      input: EMPTY_INPUT,
+      async execute() {
+        return { content: await logout() };
+      }
+    }
+  ];
+}
+
 // src/plugin.ts
 var DEFAULT_PROVIDER_ID = "actsis-litellm";
 var DEFAULT_CATALOG_TTL_MS2 = 15 * 60 * 1e3;
 var DEFAULT_REQUEST_TIMEOUT_MS = 3e4;
-function normalizeOptions(options) {
+var DEFAULT_PROVIDER_NAME = "Actsis LiteLLM";
+var OPENAI_COMPATIBLE_PACKAGE = "@opencode/ai/providers/openai-compatible";
+function makeCredentialReader(ctx, providerId) {
+  return async () => {
+    const conn = await ctx.integration.connection.active(providerId);
+    if (!conn) return null;
+    const cred = await ctx.integration.connection.resolve(conn);
+    return cred ?? null;
+  };
+}
+function normalizeRawOptions(options) {
   if (!options || typeof options !== "object") {
     return {};
   }
-  const record = options;
   return {
-    url: typeof record.url === "string" ? record.url : void 0,
-    providerId: typeof record.providerId === "string" ? record.providerId : void 0,
-    catalogTtlMinutes: typeof record.catalogTtlMinutes === "number" ? record.catalogTtlMinutes : void 0,
-    requestTimeoutMs: typeof record.requestTimeoutMs === "number" ? record.requestTimeoutMs : void 0
+    url: typeof options.url === "string" ? options.url : void 0,
+    providerId: typeof options.providerId === "string" ? options.providerId : void 0,
+    catalogTtlMinutes: typeof options.catalogTtlMinutes === "number" ? options.catalogTtlMinutes : void 0,
+    requestTimeoutMs: typeof options.requestTimeoutMs === "number" ? options.requestTimeoutMs : void 0
   };
 }
 function resolveProviderId(options) {
   const id = options?.providerId?.trim();
   return id || DEFAULT_PROVIDER_ID;
 }
-async function resolveClosure(input, options, authPath = defaultAuthPath(), stateDir) {
-  const pluginOptions = normalizeOptions(options);
+function resolveStateDir() {
+  return process.env.ACTSIS_LITELLM_STATE_DIR;
+}
+async function resolveClosure(options, authPath = defaultAuthPath(), stateDir = resolveStateDir()) {
+  const pluginOptions = normalizeRawOptions(options);
   const providerId = resolveProviderId(pluginOptions);
   const envUrl = process.env.ACTSIS_LITELLM_URL?.trim();
   const storedUrl = (await readPluginState(stateDir))?.gatewayUrl;
@@ -1577,166 +1877,104 @@ async function resolveClosure(input, options, authPath = defaultAuthPath(), stat
     stateDir
   };
 }
-function buildProviderInjection(config, params) {
-  const existing = config.provider?.[params.providerId];
-  const baseURL = params.baseUrl ? `${params.baseUrl}/v1` : "";
-  const merged = {
-    npm: existing?.npm ?? "@ai-sdk/openai-compatible",
-    name: existing?.name ?? "Actsis LiteLLM",
-    options: {
-      baseURL,
-      apiKey: "",
-      ...existing?.options
+function buildProviderInfo(closure) {
+  return {
+    ...ProviderSchema.Info.empty(closure.providerId),
+    name: DEFAULT_PROVIDER_NAME,
+    activation: "enabled",
+    package: OPENAI_COMPATIBLE_PACKAGE,
+    settings: {
+      baseURL: closure.baseUrl ? `${closure.baseUrl}/v1` : ""
     },
-    models: {
-      ...existing?.models ?? {},
-      ...params.models
-    }
-  };
-  if (!config.provider) {
-    config.provider = {};
-  }
-  config.provider[params.providerId] = merged;
-}
-function buildCommandTemplates(existing) {
-  const commands = {};
-  if (!existing?.["actsis-litellm-status"]) {
-    commands["actsis-litellm-status"] = {
-      template: "Use the actsis_litellm_status tool, then summarize its result for the user.",
-      description: "Show LiteLLM gateway status and model cache state."
-    };
-  }
-  if (!existing?.["actsis-litellm-models"]) {
-    commands["actsis-litellm-models"] = {
-      template: "Use the actsis_litellm_models tool, then summarize its result for the user.",
-      description: "Force-sync the LiteLLM model catalog and show changes."
-    };
-  }
-  if (!existing?.["actsis-litellm-budget"]) {
-    commands["actsis-litellm-budget"] = {
-      template: "Use the actsis_litellm_budget tool, then summarize its result for the user.",
-      description: "Force a budget refresh and report the exact outcome."
-    };
-  }
-  if (!existing?.["actsis-litellm-logout"]) {
-    commands["actsis-litellm-logout"] = {
-      template: "Use the actsis_litellm_logout tool, then summarize its result for the user.",
-      description: "Revoke LiteLLM credentials and clear local state."
-    };
-  }
-  return commands;
-}
-async function resolveGatewayUrlForAuth(inputs, closure) {
-  const fromInput = inputs?.gatewayUrl?.trim();
-  if (fromInput) {
-    return normalizeBaseUrl(fromInput);
-  }
-  if (closure.baseUrl) {
-    return closure.baseUrl;
-  }
-  throw new ConfigError("Gateway URL not configured. Provide it during login or set ACTSIS_LITELLM_URL / plugin options.");
-}
-function makeGatewayUrlPrompt(closure) {
-  return {
-    type: "text",
-    key: "gatewayUrl",
-    message: "Gateway base URL (press Enter to use the configured one)",
-    placeholder: "https://your-gateway.example.com",
-    validate(value) {
-      const trimmed = value.trim();
-      if (!trimmed) {
-        if (closure.baseUrl) return void 0;
-        return "Gateway URL is required.";
-      }
-      try {
-        const url = new URL(trimmed);
-        if (url.protocol !== "http:" && url.protocol !== "https:") {
-          return "Gateway URL must use http:// or https://.";
-        }
-      } catch {
-        return "Gateway URL is not a valid URL.";
-      }
-      return void 0;
-    }
+    integrationID: closure.providerId
   };
 }
-function buildOAuthMethod(closure) {
-  return {
-    type: "oauth",
-    label: "Sign in with SSO (browser)",
-    prompts: [makeGatewayUrlPrompt(closure)],
-    async authorize(inputs) {
-      const baseUrl = await resolveGatewayUrlForAuth(inputs, closure);
-      let schemeUpgraded = false;
-      const discovery = await fetchCliAuthDiscovery(
-        baseUrl,
-        closure.requestTimeoutMs,
-        () => {
-          schemeUpgraded = true;
-        }
-      );
-      const flow = await runLoginFlow(
-        { requestTimeoutMs: closure.requestTimeoutMs },
-        discovery,
-        { schemeUpgraded }
-      );
-      const originalCallback = flow.callback;
-      const wrappedCallback = async () => {
-        try {
-          const result = await originalCallback();
-          if (result.type === "success") {
-            await updatePluginState(
-              {
-                gatewayUrl: baseUrl,
-                providerId: closure.providerId,
-                authMode: "oauth",
-                clientId: discovery.issuer,
-                tokenEndpoint: discovery.tokenEndpoint,
-                revocationEndpoint: discovery.revocationEndpoint,
-                resource: discovery.resource,
-                schemeUpgraded
-              },
-              closure.stateDir
-            );
-          }
-          return result;
-        } catch {
-          return { type: "failed" };
-        }
-      };
-      return {
-        ...flow,
-        callback: wrappedCallback
-      };
-    }
+function mapModelConfigToInfo(providerId, modelId, config) {
+  const info = {
+    ...ModelSchema.Info.default(
+      providerId,
+      modelId
+    )
   };
-}
-function buildApiKeyMethod(closure) {
-  return {
-    type: "api",
-    label: "Use an API key",
-    prompts: [makeGatewayUrlPrompt(closure)],
-    async authorize(inputs) {
-      try {
-        const baseUrl = await resolveGatewayUrlForAuth(inputs, closure);
-        await updatePluginState(
-          {
-            gatewayUrl: baseUrl,
-            providerId: closure.providerId,
-            authMode: "api_key",
-            clientId: void 0,
-            tokenEndpoint: void 0,
-            revocationEndpoint: void 0,
-            resource: void 0
-          },
-          closure.stateDir
-        );
-        return { type: "success" };
-      } catch {
-        return { type: "failed" };
+  info.name = config.name || modelId;
+  info.limit = {
+    context: config.limit.context,
+    output: config.limit.output
+  };
+  info.capabilities = {
+    tools: config.tool_call,
+    input: config.modalities.input,
+    output: config.modalities.output
+  };
+  const tierCosts = config.cost?.tiers ?? [];
+  const costs = [
+    {
+      input: config.cost?.input ?? 0,
+      output: config.cost?.output ?? 0,
+      cache: {
+        read: config.cost?.cache_read ?? 0,
+        write: config.cost?.cache_write ?? 0
       }
     }
-  };
+  ];
+  for (const tier of tierCosts) {
+    costs.push({
+      tier: { type: "context", size: tier.tier.size },
+      input: tier.input,
+      output: tier.output,
+      cache: {
+        read: tier.cache.read,
+        write: tier.cache.write
+      }
+    });
+  }
+  info.cost = costs;
+  const variants = Object.entries(config.variants ?? {}).map(([id, variant]) => ({
+    id,
+    settings: { reasoningEffort: variant.reasoningEffort }
+  }));
+  info.variants = variants;
+  return info;
+}
+function buildCommandDefinitions(existing) {
+  const defined = new Set(existing?.map((c) => c.name) ?? []);
+  const all = [
+    {
+      name: "actsis-litellm-status",
+      description: "Show LiteLLM gateway status and model cache state.",
+      template: "Use the actsis_litellm_status tool, then summarize its result for the user."
+    },
+    {
+      name: "actsis-litellm-models",
+      description: "Force-sync the LiteLLM model catalog and show changes.",
+      template: "Use the actsis_litellm_models tool, then summarize its result for the user."
+    },
+    {
+      name: "actsis-litellm-budget",
+      description: "Force a budget refresh and report the exact outcome.",
+      template: "Use the actsis_litellm_budget tool, then summarize its result for the user."
+    },
+    {
+      name: "actsis-litellm-logout",
+      description: "Revoke LiteLLM credentials and clear local state.",
+      template: "Use the actsis_litellm_logout tool, then summarize its result for the user."
+    }
+  ];
+  return all.filter((command) => !defined.has(command.name));
+}
+function normalizeThinkingOption(options) {
+  const thinking = options.thinking;
+  if (typeof thinking === "string") {
+    const lower = thinking.toLowerCase();
+    options.thinking = lower === "off" || lower === "disabled" ? { type: "disabled" } : { type: "adaptive" };
+    return;
+  }
+  if (typeof thinking === "object" && thinking !== null) {
+    const type = thinking.type;
+    if (type !== "disabled" && type !== "adaptive") {
+      options.thinking = { type: "adaptive" };
+    }
+  }
 }
 function makeAuthFetch(getToken, fetchImpl = globalThis.fetch) {
   return async (input, init) => {
@@ -1750,7 +1988,7 @@ function makeAuthFetch(getToken, fetchImpl = globalThis.fetch) {
     if (!response.ok) {
       const text = await response.clone().text().catch(() => "");
       const lower = text.toLowerCase();
-      if (isOverflowErrorMessage(text)) {
+      if (isOverflowErrorMessage(text) || lower.includes("context_length_exceeded")) {
         throw new Error(`context_length_exceeded: ${text.slice(0, 300)}`);
       }
       const info = parseLimitError(text);
@@ -1767,73 +2005,193 @@ function makeAuthFetch(getToken, fetchImpl = globalThis.fetch) {
     return response;
   };
 }
-function buildAuthLoader(closure, input) {
-  return async function authLoader(getAuth) {
-    const state = await readPluginState(closure.stateDir);
-    const baseUrl = closure.baseUrl ?? (state?.gatewayUrl && closure.providerId === state.providerId ? normalizeBaseUrl(state.gatewayUrl) : null);
-    const baseURL = baseUrl ? `${baseUrl}/v1` : "";
-    let current;
-    try {
-      current = await getAuth();
-    } catch {
-      return {};
-    }
-    if (current.type === "api") {
-      return {
-        apiKey: current.key,
-        baseURL,
-        fetch: makeAuthFetch(() => Promise.resolve(current.key))
-      };
-    }
-    if (current.type === "oauth") {
-      const tokenProvider = async () => {
-        const cur = await getAuth();
-        if (cur.type !== "oauth") {
-          throw new Error("Not signed in to the LiteLLM gateway \u2014 run /login");
-        }
-        return ensureFreshToken(
-          { access: cur.access, refresh: cur.refresh, expires: cur.expires },
-          {
-            state: await readPluginState(closure.stateDir),
-            timeoutMs: closure.requestTimeoutMs,
-            onRefreshed: async (next) => {
-              await input.client.auth.set({
-                path: { id: closure.providerId },
-                body: { type: "oauth", ...next }
-              });
-            }
-          }
-        );
-      };
-      return {
-        apiKey: "",
-        baseURL,
-        fetch: makeAuthFetch(tokenProvider)
-      };
-    }
-    return {};
+function gatewayUrlField() {
+  return {
+    type: "string",
+    key: "gatewayUrl",
+    title: "Gateway base URL",
+    description: "ACTSIS LiteLLM gateway base URL (https://...). Press Enter to use the configured one.",
+    placeholder: "https://your-gateway.example.com",
+    required: true,
+    format: "uri"
   };
 }
-function buildProviderModels(closure) {
-  return async function providerModels(_provider, ctx) {
-    let token;
-    if (ctx.auth?.type === "oauth") {
-      token = ctx.auth.access;
-    } else if (ctx.auth?.type === "api") {
-      token = ctx.auth.key;
+async function resolveGatewayUrlForAuth(answer, closure) {
+  const fromAnswer = typeof answer?.gatewayUrl === "string" ? answer.gatewayUrl.trim() : "";
+  if (fromAnswer) {
+    return normalizeBaseUrl(fromAnswer);
+  }
+  if (closure.baseUrl) {
+    return closure.baseUrl;
+  }
+  throw new ConfigError(
+    "Gateway URL not configured. Provide it during login or set ACTSIS_LITELLM_URL / plugin options."
+  );
+}
+function buildApiKeyMethodRegistration(closure) {
+  return {
+    integrationID: closure.providerId,
+    method: {
+      type: "key",
+      label: "Use an API key",
+      form: [gatewayUrlField()]
     }
-    const state = await readPluginState(closure.stateDir);
-    const baseUrl = closure.baseUrl ?? (state?.gatewayUrl ? normalizeBaseUrl(state.gatewayUrl) : null);
-    const cached = await loadCachedModels(closure.stateDir);
-    if (cached && Object.keys(cached).length > 0) {
-      const age = await computeCacheAge(closure.stateDir);
-      if (age !== null && age < closure.catalogTtlMs) {
-        return cached;
+  };
+}
+function buildOAuthMethodRegistration(closure) {
+  return buildAuthMethodRegistrations(closure).oauth;
+}
+var OAUTH_METHOD_ID = "sso-browser";
+var OAUTH_METHOD_BRANDED_ID = OAUTH_METHOD_ID;
+function buildAuthMethodRegistrations(closure) {
+  const oauth = {
+    integrationID: closure.providerId,
+    method: {
+      id: OAUTH_METHOD_ID,
+      type: "oauth",
+      label: "Sign in with SSO (browser)",
+      form: [gatewayUrlField()]
+    },
+    async authorize(answer) {
+      const baseUrl = await resolveGatewayUrlForAuth(
+        answer,
+        closure
+      );
+      let schemeUpgraded = false;
+      const discovery = await fetchCliAuthDiscovery(
+        baseUrl,
+        closure.requestTimeoutMs,
+        () => {
+          schemeUpgraded = true;
+        }
+      );
+      const flow = await runLoginFlow(
+        { requestTimeoutMs: closure.requestTimeoutMs, stateDir: closure.stateDir },
+        discovery,
+        { schemeUpgraded }
+      );
+      const authorization = {
+        url: flow.url,
+        instructions: flow.instructions,
+        mode: "auto",
+        callback: (async () => {
+          const result = await flow.callback();
+          if (result.type !== "success") {
+            throw new ConfigError("SSO login did not complete. Run the login flow again.");
+          }
+          await updatePluginState(
+            {
+              gatewayUrl: baseUrl,
+              providerId: closure.providerId,
+              authMode: "oauth",
+              clientId: discovery.issuer,
+              tokenEndpoint: discovery.tokenEndpoint,
+              revocationEndpoint: discovery.revocationEndpoint,
+              resource: discovery.resource,
+              schemeUpgraded
+            },
+            closure.stateDir
+          );
+          return {
+            type: "oauth",
+            methodID: OAUTH_METHOD_BRANDED_ID,
+            refresh: result.refresh,
+            access: result.access,
+            expires: result.expires,
+            metadata: {
+              userId: result.userId,
+              teamId: result.teamId
+            }
+          };
+        })()
+      };
+      return authorization;
+    },
+    async refresh(credential) {
+      const next = await ensureFreshToken(
+        { access: credential.access, refresh: credential.refresh, expires: credential.expires },
+        {
+          state: await readPluginState(closure.stateDir),
+          timeoutMs: closure.requestTimeoutMs
+        }
+      );
+      return {
+        type: "oauth",
+        methodID: credential.methodID,
+        refresh: credential.refresh,
+        access: next,
+        expires: credential.expires,
+        metadata: credential.metadata
+      };
+    },
+    label(credential) {
+      if (credential.metadata && typeof credential.metadata === "object") {
+        const userId = credential.metadata.userId;
+        if (typeof userId === "string" && userId) return userId;
       }
+      return void 0;
     }
-    if (!token || !baseUrl) {
-      return cached ?? {};
+  };
+  const apiKey = buildApiKeyMethodRegistration(closure);
+  return { oauth, apiKey };
+}
+async function runBudgetRefresh(closure, getCredential) {
+  try {
+    const state = await readPluginState(closure.stateDir);
+    const entry = await credentialEntry(closure, getCredential);
+    if (!state?.gatewayUrl || !entry) return;
+    const token = entry.type === "oauth" ? await ensureFreshToken(
+      { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+      {
+        state,
+        timeoutMs: closure.requestTimeoutMs
+      }
+    ) : entry.key;
+    const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, closure.requestTimeoutMs);
+    await updatePluginState(
+      { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
+      closure.stateDir
+    );
+  } catch {
+  }
+}
+async function credentialEntry(closure, getCredential) {
+  if (getCredential) {
+    try {
+      const cred = await getCredential();
+      if (cred) {
+        if (cred.type === "oauth" && typeof cred.access === "string" && cred.access) {
+          return {
+            type: "oauth",
+            access: cred.access,
+            refresh: typeof cred.refresh === "string" ? cred.refresh : "",
+            expires: typeof cred.expires === "number" ? cred.expires : 0
+          };
+        }
+        if (cred.type === "key" && typeof cred.key === "string" && cred.key) {
+          return { type: "api", key: cred.key };
+        }
+      }
+    } catch {
     }
+  }
+  return readAuthEntry(closure.authPath, closure.providerId);
+}
+async function buildInitialModels(closure, getCredential) {
+  const entry = await credentialEntry(closure, getCredential);
+  const token = entry?.type === "oauth" ? entry.access : entry?.type === "api" ? entry.key : void 0;
+  const state = await readPluginState(closure.stateDir);
+  const baseUrl = closure.baseUrl ?? (state?.gatewayUrl ? normalizeBaseUrl(state.gatewayUrl) : null);
+  const toRecord = (models) => {
+    const record = {};
+    for (const [id, config] of Object.entries(models)) {
+      record[id] = mapModelConfigToInfo(closure.providerId, id, config);
+    }
+    return record;
+  };
+  const cached = await loadCachedModels(closure.stateDir);
+  const cachedRecord = cached ?? {};
+  if (token && baseUrl) {
     try {
       const fresh = await fetchCatalogModels(
         {
@@ -1844,377 +2202,146 @@ function buildProviderModels(closure) {
         },
         token
       );
-      const record = {};
+      const record = { ...cachedRecord };
       for (const model of fresh) {
         record[model.name] = model;
       }
       await saveCachedModels(record, closure.stateDir);
-      return record;
+      return toRecord(record);
     } catch {
-      return cached ?? {};
+      return toRecord(cachedRecord);
     }
-  };
+  }
+  return toRecord(cachedRecord);
 }
-async function ActsisActiveLLMPlugin(input, options) {
-  const closure = await resolveClosure(
-    input,
-    options,
-    defaultAuthPath(),
-    process.env.ACTSIS_LITELLM_STATE_DIR
-  );
-  const hooks = {
-    config: void 0,
-    auth: void 0,
-    provider: void 0,
-    tool: void 0,
-    "chat.headers": void 0,
-    "chat.params": void 0,
-    event: void 0
-  };
-  hooks.config = async (config) => {
-    const token = readAuthEntry(closure.authPath, closure.providerId)?.then((entry) => {
-      if (entry?.type === "oauth") return entry.access;
-      if (entry?.type === "api") return entry.key;
-      return void 0;
+var plugin_default = Plugin.define({
+  id: DEFAULT_PROVIDER_ID,
+  async setup(ctx) {
+    const context = ctx;
+    const closure = await resolveClosure(
+      context.options,
+      defaultAuthPath(),
+      resolveStateDir()
+    );
+    const getCredential = makeCredentialReader(context, closure.providerId);
+    await context.integration.transform((editor) => {
+      const { oauth, apiKey } = buildAuthMethodRegistrations(closure);
+      editor.method.update(oauth);
+      editor.method.update(apiKey);
     });
-    let models = {};
-    const resolvedToken = await token;
-    const cacheAge = await computeCacheAge(closure.stateDir);
-    const cacheFresh = cacheAge !== null && cacheAge < closure.catalogTtlMs;
-    if (resolvedToken && closure.baseUrl && (!cacheFresh || Object.keys(models).length === 0)) {
-      try {
-        const fresh = await fetchCatalogModels(
-          {
-            baseUrl: closure.baseUrl,
-            providerId: closure.providerId,
-            catalogTtlMs: closure.catalogTtlMs,
-            requestTimeoutMs: closure.requestTimeoutMs
-          },
-          resolvedToken
-        );
-        for (const model of fresh) {
-          models[model.name] = model;
-        }
-        await saveCachedModels(models, closure.stateDir);
-      } catch {
-        const cached = await loadCachedModels(closure.stateDir);
-        if (cached) {
-          models = cached;
-        }
-      }
-    } else {
-      const cached = await loadCachedModels(closure.stateDir);
-      if (cached) {
-        models = cached;
-      }
-    }
-    buildProviderInjection(config, {
-      providerId: closure.providerId,
-      baseUrl: closure.baseUrl,
-      models
+    const providerInfo = buildProviderInfo(closure);
+    const initialModels = await buildInitialModels(closure, getCredential);
+    await context.provider.transform((editor) => {
+      editor.add({
+        info: providerInfo,
+        models: Object.values(initialModels)
+      });
     });
-    const commands = buildCommandTemplates(config.command);
-    if (!config.command) {
-      config.command = {};
-    }
-    Object.assign(config.command, commands);
-  };
-  hooks.auth = {
-    provider: closure.providerId,
-    loader: buildAuthLoader(closure, input),
-    methods: [buildOAuthMethod(closure), buildApiKeyMethod(closure)]
-  };
-  hooks.provider = {
-    id: closure.providerId,
-    models: buildProviderModels(closure)
-  };
-  hooks.tool = {};
-  hooks["chat.headers"] = async (hookInput, output) => {
-    if (hookInput.model?.providerID === closure.providerId && hookInput.sessionID) {
-      output.headers["X-Litellm-Session-ID"] = hookInput.sessionID;
-    }
-  };
-  hooks["chat.params"] = async (hookInput, output) => {
-    if (hookInput.model?.providerID !== closure.providerId) {
-      return;
-    }
-    const thinking = output.options.thinking;
-    if (typeof thinking === "string") {
-      if (thinking.toLowerCase() === "off" || thinking.toLowerCase() === "disabled") {
-        output.options.thinking = { type: "disabled" };
-      } else {
-        output.options.thinking = { type: "adaptive" };
+    await context.tool.transform((editor) => {
+      const toolDeps = {
+        providerId: closure.providerId,
+        stateDir: closure.stateDir,
+        authPath: closure.authPath,
+        getCredential
+      };
+      for (const info of buildLitellmToolInfos(toolDeps)) {
+        editor.add(info);
       }
-    } else if (typeof thinking === "object" && thinking !== null) {
-      const type = thinking.type;
-      if (type !== "disabled" && type !== "adaptive") {
-        output.options.thinking = { type: "adaptive" };
-      }
-    }
-  };
-  hooks.event = async ({ event }) => {
-    if (event.type !== "session.idle") return;
-    try {
-      const state = await readPluginState(closure.stateDir);
-      const entry = await readAuthEntry(closure.authPath, closure.providerId);
-      if (!state?.gatewayUrl || !entry) return;
-      const token = entry.type === "oauth" ? await ensureFreshToken(
-        { access: entry.access, refresh: entry.refresh, expires: entry.expires },
-        {
-          state,
-          timeoutMs: closure.requestTimeoutMs,
-          onRefreshed: async (next) => {
-            await input.client.auth.set({
-              path: { id: closure.providerId },
-              body: { type: "oauth", ...next }
+    });
+    await context.command.transform((editor) => {
+      for (const command of buildCommandDefinitions()) {
+        editor.add({
+          name: command.name,
+          description: command.description,
+          execute: async ({ sessionID, delivery }) => {
+            await context.session.prompt({
+              sessionID,
+              text: command.template,
+              ...delivery !== void 0 ? { delivery } : {}
             });
           }
+        });
+      }
+    });
+    await context.session.hook(
+      "model.request",
+      (event) => {
+        const ev = event;
+        const headers = ev.headers;
+        if (headers && ev.sessionID) {
+          headers["X-Litellm-Session-ID"] = ev.sessionID;
         }
-      ) : entry.key;
-      const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, closure.requestTimeoutMs);
-      await updatePluginState(
-        { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
-        closure.stateDir
-      );
-    } catch {
-    }
-  };
-  return hooks;
-}
-
-// src/tools.ts
-import { tool } from "@opencode-ai/plugin";
-import path4 from "path";
-import os4 from "os";
-import { rm as rm3 } from "fs/promises";
-var DEFAULT_PLUGIN_DIR_NAME3 = "actsis-litellm";
-var DEFAULT_APP_DIR_NAME3 = "opencode";
-var CACHE_FILE_NAME2 = "models-cache.json";
-function defaultPluginDir3() {
-  const dataHome = process.env.XDG_DATA_HOME ? process.env.XDG_DATA_HOME : path4.join(os4.homedir(), ".local", "share");
-  return path4.join(dataHome, DEFAULT_APP_DIR_NAME3, DEFAULT_PLUGIN_DIR_NAME3);
-}
-function cachePath2(dir) {
-  return path4.join(dir ?? defaultPluginDir3(), CACHE_FILE_NAME2);
-}
-function formatExpiry(entry) {
-  if (!entry) return "never";
-  if (entry.type === "api") return "never";
-  if (!Number.isFinite(entry.expires)) return "never";
-  return new Date(entry.expires).toISOString();
-}
-function buildLitellmTools(deps) {
-  const providerId = deps.providerId;
-  const stateDir = deps.stateDir;
-  const authPath = deps.authPath ?? defaultAuthPath();
-  const timeout = deps.timeout;
-  const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
-  return {
-    actsis_litellm_status: tool({
-      description: "Show LiteLLM gateway status, credential state, and model cache age.",
-      args: {},
-      async execute(_args, _context) {
-        const state = await readPluginState(stateDir);
-        const entry = await readAuthEntry(authPath, providerId);
-        const cached = await loadCachedModels(stateDir);
-        const age = await computeCacheAge(stateDir);
-        const gatewayUrl = state?.gatewayUrl ?? "not configured";
-        const ageText = age === null ? "none" : `${Math.floor(age / 6e4)}m ago`;
-        const cacheCount = cached ? Object.keys(cached).length : 0;
-        const authType = entry?.type ?? "none";
-        const authExpiry = formatExpiry(entry);
-        let budgetLines = ["Budget: unavailable"];
-        try {
-          if (entry && state?.gatewayUrl) {
-            const token = entry.type === "oauth" ? await ensureFreshToken(
-              { access: entry.access, refresh: entry.refresh, expires: entry.expires },
-              {
-                state,
-                timeoutMs: timeout,
-                fetchImpl,
-                onRefreshed: async (next) => {
-                  await deps.input.client.auth.set({
-                    path: { id: providerId },
-                    body: { type: "oauth", ...next }
-                  });
-                }
-              }
-            ) : entry.key;
-            const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
-            await updatePluginState(
-              { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
-              stateDir
+      },
+      { providerID: closure.providerId }
+    );
+    await context.session.hook(
+      "context",
+      (event) => {
+        const ev = event;
+        if (ev.options) {
+          normalizeThinkingOption(ev.options);
+        }
+      },
+      { providerID: closure.providerId }
+    );
+    await context.session.hook(
+      "http.response",
+      (event) => {
+        const ev = event;
+        const response = ev.response;
+        if (!response) return;
+        void Promise.resolve(response.clone().text().catch(() => "")).then((text) => {
+          if (!text) return;
+          if (isOverflowErrorMessage(text)) {
+            console.warn(
+              `[actsis-litellm] context overflow on model ${ev.model?.modelID ?? "unknown"}: ${text.slice(0, 300)}`
             );
-            const primary = formatBudgetLine(snapshot.primary);
-            if (primary) {
-              budgetLines = [`Budget: ${primary}`];
-              if (snapshot.source === "user_info") {
-                for (const key of snapshot.ownKeys) {
-                  const keyLine = formatBudgetLine(key);
-                  if (keyLine) {
-                    budgetLines.push(
-                      key.keyAlias ? `Key ${key.keyAlias}: ${keyLine}` : `Key: ${keyLine}`
-                    );
-                  }
-                }
-              }
-            }
+            return;
           }
-        } catch (err) {
-          if (err instanceof AuthError) {
-            budgetLines = ["Budget: Credential rejected \u2014 run /login again"];
-          } else {
-            const reason = err instanceof Error ? err.message : String(err);
-            const cachedSnapshot = state?.lastBudgetSnapshot;
-            const cachedAt = state?.budgetRefreshedAt;
-            const cachedLine = cachedSnapshot && typeof cachedAt === "number" ? formatBudgetLine(cachedSnapshot.primary) : null;
-            const cachedAgeSeconds = cachedSnapshot && typeof cachedAt === "number" ? Math.max(0, Math.floor((Date.now() - cachedAt) / 1e3)) : null;
-            budgetLines = [
-              `Budget unavailable: ${reason}`,
-              ...cachedLine && cachedAgeSeconds !== null ? [`Budget (cached ${cachedAgeSeconds}s ago): ${cachedLine}`] : []
-            ];
+          const info = parseLimitError(text);
+          if (info?.kind === "budget_exceeded") {
+            console.warn(`[actsis-litellm] budget warning: ${formatBudgetWarning(info)}`);
+          } else if (info?.kind === "throttling_error") {
+            console.warn(`[actsis-litellm] throttle warning: ${formatThrottleWarning(info)}`);
           }
-        }
-        const lines = [
-          `Provider: ${providerId}`,
-          `Auth: ${authType} (expires ${authExpiry})`,
-          `Catalog: ${cacheCount} models cached (age ${ageText})`,
-          `Gateway URL: ${gatewayUrl}`,
-          ...budgetLines
-        ];
-        return lines.join("\n");
-      }
-    }),
-    actsis_litellm_budget: tool({
-      description: "Force a budget refresh and report the exact outcome.",
-      args: {},
-      async execute(_args, _context) {
-        const state = await readPluginState(stateDir);
-        const entry = await readAuthEntry(authPath, providerId);
-        if (!state || !entry) {
-          return "no credential stored \u2014 run /login";
-        }
-        if (!state.gatewayUrl) {
-          return "gateway URL not configured";
-        }
-        try {
-          const token = entry.type === "oauth" ? await ensureFreshToken(
-            { access: entry.access, refresh: entry.refresh, expires: entry.expires },
-            {
-              state,
-              timeoutMs: timeout,
-              fetchImpl,
-              onRefreshed: async (next) => {
-                await deps.input.client.auth.set({
-                  path: { id: providerId },
-                  body: { type: "oauth", ...next }
-                });
-              }
-            }
-          ) : entry.key;
-          const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
-          await updatePluginState(
-            { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
-            stateDir
-          );
-          const text = formatBudgetStatus(snapshot.primary);
-          return text ?? "no spend data (spend null)";
-        } catch (err) {
-          if (err instanceof AuthError) {
-            return err.message;
-          }
-          const reason = err instanceof Error ? err.message : String(err);
-          const cachedLine = state.lastBudgetSnapshot && state.budgetRefreshedAt ? formatBudgetLine(state.lastBudgetSnapshot.primary) : null;
-          return `error: ${reason}${cachedLine ? ` (last known: ${cachedLine})` : ""}`;
-        }
-      }
-    }),
-    actsis_litellm_models: tool({
-      description: "Force-sync the LiteLLM model catalog from the gateway.",
-      args: {},
-      async execute(_args, _context) {
-        const entry = await readAuthEntry(authPath, providerId);
-        if (!entry) {
-          return "Not signed in \u2014 run /login and choose ACTSIS LiteLLM.";
-        }
-        const state = await readPluginState(stateDir);
-        if (!state?.gatewayUrl) {
-          return "Gateway URL not configured.";
-        }
-        const token = entry.type === "oauth" ? entry.access : entry.key;
-        const previous = await loadCachedModels(stateDir);
-        const previousIds = previous ? Object.keys(previous) : [];
-        const previousSet = new Set(previousIds);
-        const fresh = await fetchCatalogModels(
-          {
-            baseUrl: state.gatewayUrl,
-            providerId,
-            catalogTtlMs: 0,
-            requestTimeoutMs: timeout
-          },
-          token,
-          void 0,
-          fetchImpl
-        );
-        const record = {};
-        for (const model of fresh) {
-          record[model.name] = model;
-        }
-        await saveCachedModels(record, stateDir);
-        const currentIds = Object.keys(record);
-        const added = currentIds.filter((id) => !previousSet.has(id)).length;
-        const removed = previousIds.filter((id) => !record[id]).length;
-        return `Model catalog synced: ${currentIds.length} models available (added ${added}, removed ${removed}). Restart OpenCode to see new models in the picker.`;
-      }
-    }),
-    actsis_litellm_logout: tool({
-      description: "Revoke LiteLLM credentials and clear local state.",
-      args: {},
-      async execute(_args, _context) {
-        const state = await readPluginState(stateDir);
-        const entry = await readAuthEntry(authPath, providerId);
-        if (entry?.type === "oauth" && entry.refresh && state?.tokenEndpoint && state?.clientId) {
+        }).catch(() => {
+        });
+      },
+      { providerID: closure.providerId }
+    );
+    const controller = new AbortController();
+    const eventLoop = (async () => {
+      try {
+        for await (const event of context.event.subscribe({ signal: controller.signal })) {
+          if (event.type !== "session.idle") continue;
           try {
-            await revokeToken(
-              discoveryFromState(state),
-              { token: entry.refresh, clientId: state.clientId },
-              timeout,
-              fetchImpl
-            );
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            if (message.toLowerCase().includes("fetch")) {
-            }
+            await runBudgetRefresh(closure, getCredential);
+          } catch {
           }
         }
-        await clearAuthEntry(authPath, providerId);
-        await writePluginState({ version: 1 }, stateDir);
-        try {
-          await rm3(cachePath2(stateDir), { force: true });
-        } catch {
-        }
-        return "Logged out. Credentials revoked and local state cleared.";
+      } catch {
       }
-    })
-  };
-}
-
-// src/index.ts
-async function ActsisActiveLLMPlugin2(input, options) {
-  const hooks = await ActsisActiveLLMPlugin(input, options);
-  const tools = buildLitellmTools({
-    providerId: hooks.provider?.id ?? "actsis-litellm",
-    getState: async () => null,
-    // not used; tools read state directly
-    timeout: 3e4,
-    input
-  });
-  hooks.tool = tools;
-  return hooks;
-}
-var src_default = ActsisActiveLLMPlugin2;
+    })();
+    void eventLoop;
+    return async () => {
+      controller.abort();
+    };
+  }
+});
 export {
-  ActsisActiveLLMPlugin2 as ActsisActiveLLMPlugin,
-  src_default as default,
-  ActsisActiveLLMPlugin2 as server
+  DEFAULT_PROVIDER_ID,
+  buildApiKeyMethodRegistration,
+  buildAuthMethodRegistrations,
+  buildCommandDefinitions,
+  buildInitialModels,
+  buildLitellmToolInfos,
+  buildOAuthMethodRegistration,
+  buildProviderInfo,
+  plugin_default as default,
+  makeAuthFetch,
+  mapModelConfigToInfo,
+  normalizeThinkingOption,
+  resolveClosure,
+  resolveToolToken,
+  runBudgetRefresh
 };
