@@ -38,12 +38,34 @@ function formatExpiry(entry: AuthJsonEntry | null): string {
   return new Date(entry.expires).toISOString();
 }
 
+/**
+ * Structural view of a v2 integration credential, matching @opencode/schema's
+ * `Credential.Value` ({type:"oauth", methodID, refresh, access, expires} |
+ * {type:"key", key}). Kept structural so tests and tool code never import
+ * OpenCode runtime internals.
+ */
+export interface StructuralCredential {
+  type: "oauth" | "key";
+  methodID?: string;
+  refresh?: string;
+  access?: string;
+  expires?: number;
+  key?: string;
+}
+
 export interface ToolDeps {
   providerId: string;
   stateDir?: string;
   authPath?: string;
   fetchImpl?: typeof fetch;
   timeout?: number;
+  /**
+   * Optional v2 integration credential reader (wired by the server plugin
+   * from `ctx.integration.connection.active` + `resolve`). Tried FIRST by
+   * every tool; `readAuthEntry` (v1 auth.json) is only a fallback for v1-era
+   * state when this reader is absent or returns null.
+   */
+  getCredential?: () => Promise<StructuralCredential | null>;
   /**
    * Optional v2 credential persistence hook (wired by the server plugin).
    * When OpenCode's integration refresh callback persists rotated tokens,
@@ -85,7 +107,7 @@ export async function resolveToolToken(
   } = deps;
 
   const state = await readPluginState(stateDir);
-  const entry = await readAuthEntry(authPath, providerId);
+  const entry = await readEntry(deps);
   if (!entry) {
     return { state, entry: null, token: null };
   }
@@ -105,6 +127,39 @@ export async function resolveToolToken(
   return { state, entry, token: token || null };
 }
 
+/**
+ * Resolve the current credential for tool runs: the v2 integration reader
+ * first, the v1 auth.json file as fallback (v1-era installations).
+ */
+export async function readEntry(deps: ToolDeps): Promise<AuthJsonEntry | null> {
+  if (deps.getCredential) {
+    try {
+      const cred = await deps.getCredential();
+      if (cred) {
+        const normalized = normalizeCredential(cred);
+        if (normalized) return normalized;
+      }
+    } catch {
+      // Integration reader failure falls through to the v1 file fallback.
+    }
+  }
+  return readAuthEntry(deps.authPath ?? defaultAuthPath(), deps.providerId);
+}
+
+function normalizeCredential(cred: StructuralCredential): AuthJsonEntry | null {
+  if (cred.type === "oauth") {
+    if (typeof cred.access !== "string" || !cred.access) return null;
+    if (typeof cred.refresh !== "string" || !cred.refresh) return null;
+    if (typeof cred.expires !== "number") return null;
+    return { type: "oauth", access: cred.access, refresh: cred.refresh, expires: cred.expires };
+  }
+  if (cred.type === "key") {
+    if (typeof cred.key !== "string" || !cred.key) return null;
+    return { type: "api", key: cred.key };
+  }
+  return null;
+}
+
 export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
   const {
     providerId,
@@ -117,7 +172,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
 
   const status = async (): Promise<string> => {
     const state = await readPluginState(stateDir);
-    const entry = await readAuthEntry(authPath, providerId);
+    const entry = await readEntry(deps);
     const cached = await loadCachedModels(stateDir);
     const age = await computeCacheAge(stateDir);
     const gatewayUrl = state?.gatewayUrl ?? "not configured";
@@ -199,7 +254,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
 
   const budget = async (): Promise<string> => {
     const state = await readPluginState(stateDir);
-    const entry = await readAuthEntry(authPath, providerId);
+    const entry = await readEntry(deps);
 
     if (!state || !entry) {
       return "no credential stored — run /login";
@@ -240,7 +295,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
   };
 
   const models = async (): Promise<string> => {
-    const entry = await readAuthEntry(authPath, providerId);
+    const entry = await readEntry(deps);
     if (!entry) {
       return "Not signed in — run /login and choose ACTSIS LiteLLM.";
     }
@@ -282,7 +337,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
 
   const logout = async (): Promise<string> => {
     const state = await readPluginState(stateDir);
-    const entry = await readAuthEntry(authPath, providerId);
+    const entry = await readEntry(deps);
 
     if (entry?.type === "oauth" && entry.refresh && state?.tokenEndpoint && state?.clientId) {
       try {
@@ -309,7 +364,10 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
       // Best-effort cache removal.
     }
 
-    return "Logged out. Credentials revoked and local state cleared.";
+    return [
+      "Logged out. Local state and model cache cleared.",
+      "OpenCode still holds the integration credential; disconnect it via the native auth UI — the plugin has no API to delete it.",
+    ].join("\n");
   };
 
   return [

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
-import { mkdtemp, rm, mkdir, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, mkdir, writeFile, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import serverPlugin, {
@@ -392,14 +392,18 @@ describe("buildApiKeyMethodRegistration", () => {
 
 describe("OAuth method registration", () => {
   let tmpDir: string;
-  const savedEnv: { url?: string; stateDir?: string } = {};
+  const savedEnv: { url?: string; stateDir?: string; dataHome?: string } = {};
 
   beforeEach(async () => {
     tmpDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-oauth-test-"));
     savedEnv.url = process.env.ACTSIS_LITELLM_URL;
     savedEnv.stateDir = process.env.ACTSIS_LITELLM_STATE_DIR;
+    savedEnv.dataHome = process.env.XDG_DATA_HOME;
     delete process.env.ACTSIS_LITELLM_URL;
     process.env.ACTSIS_LITELLM_STATE_DIR = tmpDir;
+    // Isolation: any state write that escapes the explicit dir must land in
+    // tmpDir, never in the real default state directory.
+    process.env.XDG_DATA_HOME = tmpDir;
   });
 
   afterEach(async () => {
@@ -407,6 +411,8 @@ describe("OAuth method registration", () => {
     else delete process.env.ACTSIS_LITELLM_URL;
     if (savedEnv.stateDir !== undefined) process.env.ACTSIS_LITELLM_STATE_DIR = savedEnv.stateDir;
     else delete process.env.ACTSIS_LITELLM_STATE_DIR;
+    if (savedEnv.dataHome !== undefined) process.env.XDG_DATA_HOME = savedEnv.dataHome;
+    else delete process.env.XDG_DATA_HOME;
     vi.unstubAllGlobals();
     await rm(tmpDir, { recursive: true, force: true });
   });
@@ -506,6 +512,44 @@ describe("OAuth method registration", () => {
     expect(state_?.authMode).toBe("oauth");
     expect(state_?.providerId).toBe("actsis-litellm");
     expect(state_?.gatewayUrl).toBe("https://gw.example.com");
+  });
+
+  it("runLoginFlow state write never touches the default state directory", async () => {
+    // Regression: an aborted/login-callback state write routed through an
+    // undefined dir used to land in the real ~/.local/share state.json.
+    // With XDG_DATA_HOME pointed at tmpDir, the "default" dir is inside tmpDir,
+    // so a write escaping the closure's stateDir would create that file.
+    const defaultStateFile = path.join(
+      tmpDir,
+      "opencode",
+      "actsis-litellm",
+      "state.json",
+    );
+
+    vi.stubGlobal("fetch", stubGatewayFetch());
+    const registration = buildOAuthMethodRegistration(
+      makeClosure({ stateDir: tmpDir }),
+    ) as unknown as {
+      authorize: (answer: Record<string, unknown>) => Promise<{
+        url: string;
+        mode: "auto";
+        callback: Promise<Record<string, unknown>>;
+      }>;
+    };
+
+    const authorization = await registration.authorize({ gatewayUrl: "https://gw.example.com" });
+    const authorizeUrl = new URL(authorization.url);
+    const redirectUri = authorizeUrl.searchParams.get("redirect_uri")!;
+    const state = authorizeUrl.searchParams.get("state")!;
+    await fetch(`${redirectUri}?code=AUTHCODE&state=${state}`, { method: "POST" });
+    await authorization.callback;
+
+    // Only the tmpDir state file exists; the default-path file must not.
+    expect(await stat(defaultStateFile).then(
+      () => true,
+      () => false,
+    )).toBe(false);
+    expect((await readPluginState(tmpDir))?.providerId).toBe("actsis-litellm");
   });
 
   it("authorize rejects when no gateway URL is resolvable", async () => {

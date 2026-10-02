@@ -603,7 +603,8 @@ describe("actsis_litellm_logout", () => {
     }).find((t) => t.name === "actsis_litellm_logout")!;
 
     const result = (await info.execute({}, makeToolContext())) as { content: string };
-    expect(result.content).toBe("Logged out. Credentials revoked and local state cleared.");
+    expect(result.content).toContain("Logged out. Local state and model cache cleared.");
+    expect(result.content).toContain("native auth UI");
     expect(requests).toContain("/revoke");
 
     const authContent = JSON.parse(await readFile(authPath, "utf8"));

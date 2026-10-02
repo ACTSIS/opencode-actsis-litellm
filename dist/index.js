@@ -726,17 +726,20 @@ async function runLoginFlow(config, discovery, notices, fetchImpl = globalThis.f
           fetchImpl
         );
         const expires = Date.now() + Math.max(tokenResponse.expiresIn - 300, 60) * 1e3;
-        await updatePluginState({
-          gatewayUrl: discovery.issuer,
-          providerId: void 0,
-          authMode: "oauth",
-          clientId,
-          tokenEndpoint: discovery.tokenEndpoint,
-          revocationEndpoint: discovery.revocationEndpoint,
-          resource: discovery.resource,
-          schemeUpgraded: notices?.schemeUpgraded,
-          savedAt: Date.now()
-        });
+        await updatePluginState(
+          {
+            gatewayUrl: discovery.issuer,
+            providerId: void 0,
+            authMode: "oauth",
+            clientId,
+            tokenEndpoint: discovery.tokenEndpoint,
+            revocationEndpoint: discovery.revocationEndpoint,
+            resource: discovery.resource,
+            schemeUpgraded: notices?.schemeUpgraded,
+            savedAt: Date.now()
+          },
+          config.stateDir
+        );
         return {
           type: "success",
           refresh: tokenResponse.refreshToken ?? "",
@@ -1567,7 +1570,7 @@ async function resolveToolToken(deps) {
     timeout = DEFAULT_TIMEOUT_MS
   } = deps;
   const state = await readPluginState(stateDir);
-  const entry = await readAuthEntry(authPath, providerId);
+  const entry = await readEntry(deps);
   if (!entry) {
     return { state, entry: null, token: null };
   }
@@ -1584,6 +1587,32 @@ async function resolveToolToken(deps) {
   );
   return { state, entry, token: token || null };
 }
+async function readEntry(deps) {
+  if (deps.getCredential) {
+    try {
+      const cred = await deps.getCredential();
+      if (cred) {
+        const normalized = normalizeCredential(cred);
+        if (normalized) return normalized;
+      }
+    } catch {
+    }
+  }
+  return readAuthEntry(deps.authPath ?? defaultAuthPath(), deps.providerId);
+}
+function normalizeCredential(cred) {
+  if (cred.type === "oauth") {
+    if (typeof cred.access !== "string" || !cred.access) return null;
+    if (typeof cred.refresh !== "string" || !cred.refresh) return null;
+    if (typeof cred.expires !== "number") return null;
+    return { type: "oauth", access: cred.access, refresh: cred.refresh, expires: cred.expires };
+  }
+  if (cred.type === "key") {
+    if (typeof cred.key !== "string" || !cred.key) return null;
+    return { type: "api", key: cred.key };
+  }
+  return null;
+}
 function buildLitellmToolInfos(deps) {
   const {
     providerId,
@@ -1595,7 +1624,7 @@ function buildLitellmToolInfos(deps) {
   } = deps;
   const status = async () => {
     const state = await readPluginState(stateDir);
-    const entry = await readAuthEntry(authPath, providerId);
+    const entry = await readEntry(deps);
     const cached = await loadCachedModels(stateDir);
     const age = await computeCacheAge(stateDir);
     const gatewayUrl = state?.gatewayUrl ?? "not configured";
@@ -1661,7 +1690,7 @@ function buildLitellmToolInfos(deps) {
   };
   const budget = async () => {
     const state = await readPluginState(stateDir);
-    const entry = await readAuthEntry(authPath, providerId);
+    const entry = await readEntry(deps);
     if (!state || !entry) {
       return "no credential stored \u2014 run /login";
     }
@@ -1695,7 +1724,7 @@ function buildLitellmToolInfos(deps) {
     }
   };
   const models = async () => {
-    const entry = await readAuthEntry(authPath, providerId);
+    const entry = await readEntry(deps);
     if (!entry) {
       return "Not signed in \u2014 run /login and choose ACTSIS LiteLLM.";
     }
@@ -1730,7 +1759,7 @@ function buildLitellmToolInfos(deps) {
   };
   const logout = async () => {
     const state = await readPluginState(stateDir);
-    const entry = await readAuthEntry(authPath, providerId);
+    const entry = await readEntry(deps);
     if (entry?.type === "oauth" && entry.refresh && state?.tokenEndpoint && state?.clientId) {
       try {
         await revokeToken(
@@ -1751,7 +1780,10 @@ function buildLitellmToolInfos(deps) {
       await rm3(cachePath2(stateDir), { force: true });
     } catch {
     }
-    return "Logged out. Credentials revoked and local state cleared.";
+    return [
+      "Logged out. Local state and model cache cleared.",
+      "OpenCode still holds the integration credential; disconnect it via the native auth UI \u2014 the plugin has no API to delete it."
+    ].join("\n");
   };
   return [
     {
@@ -1795,6 +1827,14 @@ var DEFAULT_CATALOG_TTL_MS2 = 15 * 60 * 1e3;
 var DEFAULT_REQUEST_TIMEOUT_MS = 3e4;
 var DEFAULT_PROVIDER_NAME = "Actsis LiteLLM";
 var OPENAI_COMPATIBLE_PACKAGE = "@opencode/ai/providers/openai-compatible";
+function makeCredentialReader(ctx, providerId) {
+  return async () => {
+    const conn = await ctx.integration.connection.active(providerId);
+    if (!conn) return null;
+    const cred = await ctx.integration.connection.resolve(conn);
+    return cred ?? null;
+  };
+}
 function normalizeRawOptions(options) {
   if (!options || typeof options !== "object") {
     return {};
@@ -2026,7 +2066,7 @@ function buildAuthMethodRegistrations(closure) {
         }
       );
       const flow = await runLoginFlow(
-        { requestTimeoutMs: closure.requestTimeoutMs },
+        { requestTimeoutMs: closure.requestTimeoutMs, stateDir: closure.stateDir },
         discovery,
         { schemeUpgraded }
       );
@@ -2095,10 +2135,10 @@ function buildAuthMethodRegistrations(closure) {
   const apiKey = buildApiKeyMethodRegistration(closure);
   return { oauth, apiKey };
 }
-async function runBudgetRefresh(closure) {
+async function runBudgetRefresh(closure, getCredential) {
   try {
     const state = await readPluginState(closure.stateDir);
-    const entry = await readAuthEntry(closure.authPath, closure.providerId);
+    const entry = await credentialEntry(closure, getCredential);
     if (!state?.gatewayUrl || !entry) return;
     const token = entry.type === "oauth" ? await ensureFreshToken(
       { access: entry.access, refresh: entry.refresh, expires: entry.expires },
@@ -2115,8 +2155,30 @@ async function runBudgetRefresh(closure) {
   } catch {
   }
 }
-async function buildInitialModels(closure) {
-  const entry = await readAuthEntry(closure.authPath, closure.providerId);
+async function credentialEntry(closure, getCredential) {
+  if (getCredential) {
+    try {
+      const cred = await getCredential();
+      if (cred) {
+        if (cred.type === "oauth" && typeof cred.access === "string" && cred.access) {
+          return {
+            type: "oauth",
+            access: cred.access,
+            refresh: typeof cred.refresh === "string" ? cred.refresh : "",
+            expires: typeof cred.expires === "number" ? cred.expires : 0
+          };
+        }
+        if (cred.type === "key" && typeof cred.key === "string" && cred.key) {
+          return { type: "api", key: cred.key };
+        }
+      }
+    } catch {
+    }
+  }
+  return readAuthEntry(closure.authPath, closure.providerId);
+}
+async function buildInitialModels(closure, getCredential) {
+  const entry = await credentialEntry(closure, getCredential);
   const token = entry?.type === "oauth" ? entry.access : entry?.type === "api" ? entry.key : void 0;
   const state = await readPluginState(closure.stateDir);
   const baseUrl = closure.baseUrl ?? (state?.gatewayUrl ? normalizeBaseUrl(state.gatewayUrl) : null);
@@ -2161,13 +2223,14 @@ var plugin_default = Plugin.define({
       defaultAuthPath(),
       resolveStateDir()
     );
+    const getCredential = makeCredentialReader(context, closure.providerId);
     await context.integration.transform((editor) => {
       const { oauth, apiKey } = buildAuthMethodRegistrations(closure);
       editor.method.update(oauth);
       editor.method.update(apiKey);
     });
     const providerInfo = buildProviderInfo(closure);
-    const initialModels = await buildInitialModels(closure);
+    const initialModels = await buildInitialModels(closure, getCredential);
     await context.provider.transform((editor) => {
       editor.add({
         info: providerInfo,
@@ -2178,7 +2241,8 @@ var plugin_default = Plugin.define({
       const toolDeps = {
         providerId: closure.providerId,
         stateDir: closure.stateDir,
-        authPath: closure.authPath
+        authPath: closure.authPath,
+        getCredential
       };
       for (const info of buildLitellmToolInfos(toolDeps)) {
         editor.add(info);
@@ -2251,7 +2315,7 @@ var plugin_default = Plugin.define({
         for await (const event of context.event.subscribe({ signal: controller.signal })) {
           if (event.type !== "session.idle") continue;
           try {
-            await runBudgetRefresh(closure);
+            await runBudgetRefresh(closure, getCredential);
           } catch {
           }
         }

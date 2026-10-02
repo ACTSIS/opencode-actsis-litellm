@@ -129,3 +129,46 @@ OpenCode was upgraded to v2.0.20 (brew). Two user-visible failures:
   (`src/index.ts` types / `dist/index.js`), `"./tui"` unchanged
   (`src/tui.tsx` / `dist/tui.js`). `tsup.config.ts` externals updated to the
   v2 package names.
+### Post-verification fix: credential source (v2 integration store)
+
+- After a successful v2 SSO login, tools (status/budget/models/logout) and the
+  plugin's catalog bootstrap + session.idle budget refresh still read the
+  credential from the v1 `auth.json` via `readAuthEntry`; v2 never writes that
+  file, so tools reported "Auth: none", the catalog stayed empty, and budget
+  said "no credential stored".
+- `src/plugin.ts`: added `makeCredentialReader(ctx, providerId)` wiring
+  `ctx.integration.connection.active(providerId)` +
+  `connection.resolve(conn)` into a `() => Promise<CredentialValue | null>`
+  reader; `buildInitialModels` and `runBudgetRefresh` take that reader
+  (fallback: `readAuthEntry`) and setup injects it into `ToolDeps`.
+- `src/tools.ts`: new `getCredential?` in `ToolDeps` + `readEntry(deps)`
+  (reader first, `readAuthEntry` fallback, structural normalization of
+  `{type:"oauth"|...}` credentials); all four tools use it; logout revokes
+  with the integration-sourced refresh token, clears plugin state + cache,
+  and tells the user to disconnect the stored credential via the native auth
+  UI (no portable plugin API to delete it).
+- Tests: `test/plugin-credential.test.ts` (17 cases: reader-first, fallback,
+  setup wiring, logout revocation); `test/tools.test.ts` log-out assertion
+  adapted to the new honest two-line message.
+- `npm test`: 259 passed (15 files); `npm run typecheck`: clean;
+  `npm run build`: dist/index.js 75 KB, dist/tui.js 3.9 KB.
+### Post-verification fix: oauth login-flow state clobber (stateDir threading)
+
+- `src/oauth.ts` `runLoginFlow()` called `updatePluginState({...})` without the
+  `dir` argument, so the login callback's mid-flow state write (with
+  `providerId: undefined`) landed in the REAL default state directory
+  (`~/.local/share/opencode/actsis-litellm/state.json`) — tests overwrote real
+  gateway state and aborted production logins briefly clobbered it.
+- Fix: `LoginConfig` gained `stateDir?: string`; the success-path
+  `updatePluginState` patch is now written to `config.stateDir`;
+  `src/plugin.ts` `authorize()` passes `closure.stateDir` into the
+  `LoginConfig`.
+- Test hardening: "OAuth method registration" describe now pins
+  `XDG_DATA_HOME` to the tmp dir in beforeEach/afterEach; regression tests in
+  `test/oauth.test.ts` (mocked state: write must carry the configured dir,
+  never `undefined`) and `test/plugin.test.ts` (real FS: default-path
+  `state.json` must not be created by the login flow; state lands in the
+  configured `stateDir` only).
+- Grep sweep: every other reachable state write in `src/`
+  (`plugin.ts` x3, `tools.ts` x4) already threads an explicit dir
+  (`closure.stateDir` / `deps.stateDir`); no further dir-less writes found.

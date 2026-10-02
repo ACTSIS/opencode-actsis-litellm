@@ -1,5 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import http from "node:http";
+import { mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   LoopbackCallbackServer,
   parseCallbackParams,
@@ -25,6 +28,17 @@ vi.mock("../src/state.ts", async (importOriginal) => {
 });
 
 const mockedUpdatePluginState = vi.mocked(updatePluginState);
+
+/**
+ * Default state dir as state.ts resolves it (mirrors the real layout so the
+ * regression test can prove the default path was never touched).
+ */
+function defaultStateFile(): string {
+  const dataHome = process.env.XDG_DATA_HOME
+    ? process.env.XDG_DATA_HOME
+    : path.join(os.homedir(), ".local", "share");
+  return path.join(dataHome, "opencode", "actsis-litellm", "state.json");
+}
 
 function makeDiscovery(overrides?: Partial<CliAuthDiscovery>): CliAuthDiscovery {
   return {
@@ -124,7 +138,8 @@ describe("LoopbackCallbackServer", () => {
 
 describe("runLoginFlow", () => {
   it("returns an OAuth result and succeeds after callback", async () => {
-    const config: LoginConfig = { requestTimeoutMs: 5_000 };
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-oauth-login-"));
+    const config: LoginConfig = { requestTimeoutMs: 5_000, stateDir: tmpDir };
     const discovery = makeDiscovery();
 
     const fetchImpl = vi.fn().mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
@@ -178,7 +193,21 @@ describe("runLoginFlow", () => {
       expect(loginResult.expires).toBeGreaterThan(Date.now());
     }
 
+    // Regression: the login flow must never write plugin state against the
+    // default state dir. The patch must be routed to the configured
+    // stateDir, never to an undefined (real default) dir.
+    expect(mockedUpdatePluginState).toHaveBeenCalledTimes(1);
+    const [patch, dir] = mockedUpdatePluginState.mock.calls[0];
+    expect(dir).toBe(tmpDir);
+    expect(patch).toMatchObject({
+      gatewayUrl: discovery.issuer,
+      providerId: undefined,
+      authMode: "oauth",
+      clientId: "client-1",
+    });
+
     mockedUpdatePluginState.mockClear();
+    await rm(tmpDir, { recursive: true, force: true });
   });
 
   it("handles state mismatch by returning failed", async () => {
@@ -222,5 +251,56 @@ describe("runLoginFlow", () => {
     const loginResult = await result.callback();
 
     expect(loginResult.type).toBe("failed");
+  });
+
+  it("does not write state to the default state dir when stateDir is set", async () => {
+    const tmpDir = await mkdtemp(path.join(os.tmpdir(), "actsis-litellm-oauth-login-"));
+    const config: LoginConfig = { requestTimeoutMs: 5_000, stateDir: tmpDir };
+    const discovery = makeDiscovery();
+    const fetchImpl = vi.fn().mockImplementation(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/register") {
+        return new Response(JSON.stringify({ client_id: "client-1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.pathname === "/token") {
+        return new Response(
+          JSON.stringify({
+            access_token: "access-1",
+            token_type: "Bearer",
+            expires_in: 3600,
+            refresh_token: "refresh-1",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return globalThis.fetch(input);
+    });
+
+    try {
+      const result = await runLoginFlow(config, discovery, undefined, fetchImpl);
+      const url = new URL(result.url);
+      const redirectUri = url.searchParams.get("redirect_uri")!;
+      const callbackState = url.searchParams.get("state")!;
+      await fetch(`${redirectUri}?code=AUTHCODE&state=${callbackState}`, {
+        method: "POST",
+      });
+      const loginResult = await result.callback();
+      expect(loginResult.type).toBe("success");
+
+      // The single state write must be routed to the configured stateDir —
+      // an undefined dir would resolve to the real default state directory.
+      expect(mockedUpdatePluginState).toHaveBeenCalledTimes(1);
+      const writtenDir = mockedUpdatePluginState.mock.calls[0][1];
+      expect(writtenDir).toBe(tmpDir);
+      // Never the resolved default path either.
+      expect(writtenDir).not.toBe(undefined);
+      expect(defaultStateFile()).not.toBe(writtenDir);
+    } finally {
+      mockedUpdatePluginState.mockClear();
+      await rm(tmpDir, { recursive: true, force: true });
+    }
   });
 });

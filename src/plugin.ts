@@ -15,7 +15,8 @@ import {
 import { fetchCatalogModels } from "./catalog.ts";
 import { parseLimitError, formatBudgetWarning, formatThrottleWarning } from "./limit-errors.ts";
 import { isOverflowErrorMessage } from "./overflow.ts";
-import { readAuthEntry, defaultAuthPath } from "./auth-store.ts";
+import { readAuthEntry, defaultAuthPath, type AuthJsonEntry } from "./auth-store.ts";
+import type { StructuralCredential } from "./tools.ts";
 import { normalizeBaseUrl, type PluginOptions } from "./config.ts";
 import { ConfigError } from "./errors.ts";
 import { ensureFreshToken } from "./gateway-client.ts";
@@ -36,6 +37,37 @@ export interface PluginClosure {
   requestTimeoutMs: number;
   authPath: string;
   stateDir: string | undefined;
+}
+
+/**
+ * Structural view of a v2 integration credential, matching `Credential.Value`
+ * ({type:"oauth", methodID, refresh, access, expires, metadata?} |
+ * {type:"key", key, metadata?, configuration?}). Kept structural so the
+ * plugin's setup context and tests never import OpenCode runtime internals.
+ */
+export type CredentialValue = StructuralCredential & {
+  methodID?: string;
+  metadata?: Record<string, unknown>;
+  configuration?: Record<string, string | number | boolean | string[]>;
+};
+
+/**
+ * Wire the v2 integration credential reader: resolve the active connection
+ * for the integration and yield its credential (`ctx.integration.connection
+ * .active(id)` + `resolve(conn)`). Returns null when there is no active
+ * connection or no resolvable credential — the v1 auth.json fallback still
+ * applies downstream.
+ */
+export function makeCredentialReader(
+  ctx: SetupContext,
+  providerId: string,
+): () => Promise<CredentialValue | null> {
+  return async () => {
+    const conn = await ctx.integration.connection.active(providerId);
+    if (!conn) return null;
+    const cred = await ctx.integration.connection.resolve(conn);
+    return (cred ?? null) as CredentialValue | null;
+  };
 }
 
 function normalizeRawOptions(options?: Record<string, unknown>): PluginOptions {
@@ -366,7 +398,7 @@ export function buildAuthMethodRegistrations(closure: PluginClosure) {
       );
 
       const flow = await runLoginFlow(
-        { requestTimeoutMs: closure.requestTimeoutMs },
+        { requestTimeoutMs: closure.requestTimeoutMs, stateDir: closure.stateDir },
         discovery,
         { schemeUpgraded },
       );
@@ -447,10 +479,13 @@ export function buildAuthMethodRegistrations(closure: PluginClosure) {
  * subscription and the budget tool; failures are silent — the tools force a
  * fresh fetch and report the reason themselves.
  */
-export async function runBudgetRefresh(closure: PluginClosure): Promise<void> {
+export async function runBudgetRefresh(
+  closure: PluginClosure,
+  getCredential?: () => Promise<CredentialValue | null>,
+): Promise<void> {
   try {
     const state = await readPluginState(closure.stateDir);
-    const entry = await readAuthEntry(closure.authPath, closure.providerId);
+    const entry = await credentialEntry(closure, getCredential);
     if (!state?.gatewayUrl || !entry) return;
     const token = entry.type === "oauth"
       ? await ensureFreshToken(
@@ -472,13 +507,48 @@ export async function runBudgetRefresh(closure: PluginClosure): Promise<void> {
 }
 
 /**
+ * Read the current credential for plugin paths (catalog bootstrap, budget
+ * refresh): the v2 integration reader first, the v1 auth.json file as
+ * fallback (v1-era installations).
+ */
+async function credentialEntry(
+  closure: PluginClosure,
+  getCredential?: () => Promise<CredentialValue | null>,
+): Promise<AuthJsonEntry | null> {
+  if (getCredential) {
+    try {
+      const cred = await getCredential();
+      if (cred) {
+        if (cred.type === "oauth" && typeof cred.access === "string" && cred.access) {
+          return {
+            type: "oauth",
+            access: cred.access,
+            refresh: typeof cred.refresh === "string" ? cred.refresh : "",
+            expires: typeof cred.expires === "number" ? cred.expires : 0,
+          };
+        }
+        if (cred.type === "key" && typeof cred.key === "string" && cred.key) {
+          return { type: "api", key: cred.key };
+        }
+      }
+    } catch {
+      // Integration reader failure falls through to the v1 file fallback.
+    }
+  }
+  return readAuthEntry(closure.authPath, closure.providerId);
+}
+
+/**
  * Build the initial v2 Model.Info list: fetch the catalog when credentials
- * are available, and fall back to the on-disk cache otherwise.
+ * are available, and fall back to the on-disk cache otherwise. Credentials
+ * come from the v2 integration reader when supplied, with the v1 auth.json
+ * file as fallback.
  */
 export async function buildInitialModels(
   closure: PluginClosure,
+  getCredential?: () => Promise<CredentialValue | null>,
 ): Promise<Record<string, ModelSchema.Info>> {
-  const entry = await readAuthEntry(closure.authPath, closure.providerId);
+  const entry = await credentialEntry(closure, getCredential);
   const token = entry?.type === "oauth" ? entry.access : entry?.type === "api" ? entry.key : undefined;
 
   const state = await readPluginState(closure.stateDir);
@@ -522,8 +592,9 @@ export async function buildInitialModels(
 }
 
 /**
- * The v2 setup context type, structural so tests can exercise setup with
- * minimal fakes without importing OpenCode runtime internals.
+ * Minimal structural v2 setup context, structural so tests can exercise
+ * setup with minimal fakes without importing OpenCode runtime internals.
+ * The `integration.connection` pair is the v2 credential source.
  */
 export interface SetupContext {
   readonly options: Record<string, unknown>;
@@ -548,6 +619,10 @@ export interface SetupContext {
         update: (input: unknown) => void;
       };
     }) => void) => Promise<{ dispose: () => Promise<void> }>;
+    readonly connection: {
+      readonly active: (integrationID: string) => Promise<unknown>;
+      readonly resolve: (connection: unknown) => Promise<unknown>;
+    };
   };
   readonly event: {
     readonly subscribe: (options?: { signal?: AbortSignal }) => AsyncIterable<{
@@ -577,6 +652,7 @@ export default Plugin.define({
       defaultAuthPath(),
       resolveStateDir(),
     );
+    const getCredential = makeCredentialReader(context, closure.providerId);
 
     // --- Integration auth methods (must exist before the provider binds) ---
     await context.integration.transform((editor) => {
@@ -589,7 +665,7 @@ export default Plugin.define({
     // Transform callbacks must stay synchronous (Immer registry contract):
     // load the catalog before registration and capture it in the closure.
     const providerInfo = buildProviderInfo(closure);
-    const initialModels = await buildInitialModels(closure);
+    const initialModels = await buildInitialModels(closure, getCredential);
     await context.provider.transform((editor) => {
       editor.add({
         info: providerInfo,
@@ -603,6 +679,7 @@ export default Plugin.define({
         providerId: closure.providerId,
         stateDir: closure.stateDir,
         authPath: closure.authPath,
+        getCredential,
       };
       for (const info of buildLitellmToolInfos(toolDeps)) {
         editor.add(info as unknown);
@@ -688,7 +765,7 @@ export default Plugin.define({
         for await (const event of context.event.subscribe({ signal: controller.signal })) {
           if (event.type !== "session.idle") continue;
           try {
-            await runBudgetRefresh(closure);
+            await runBudgetRefresh(closure, getCredential);
           } catch {
             // Background refresh: failures are silent.
           }
