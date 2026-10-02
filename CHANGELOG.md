@@ -1,5 +1,68 @@
 # Changelog
 
+## 0.2.0 — OpenCode v2 plugin API
+
+### Breaking changes
+
+- **Requires OpenCode >= 2.0.0.** OpenCode v2 dropped the v1 plugin
+  contract; v1 plugin implementations are silently dropped by the v2
+  loader. The plugin now default-exports
+  `Plugin.define({ id, setup(ctx) })` from `@opencode/plugin`.
+- **Config rename:** the `"plugin"` key in `opencode.json` is now
+  `"plugins"`, and the terminal widget is configured in the global
+  `cli.json` (v2 auto-migrates `tui.json`, but stale V1 package entries
+  carried into `cli.json` stall plugin reconciliation — remove them).
+- **Credential storage moved to OpenCode's native integration store.**
+  Login is now an integration flow (OAuth `sso-browser` method + native
+  API-key method); OpenCode stores and rotates tokens. The legacy v1
+  `auth.json` file is only read as a fallback for pre-v2 state.
+
+### Added
+
+- **OpenAI-compatible dynamic provider for v2** — `ctx.provider.transform`
+  registers the gateway provider bound to its integration via
+  `integrationID`, with the live model catalog mapped onto v2 `Model.Info`
+  (limits, capabilities, tiered costs, variants).
+- **Four tools** (`actsis_litellm_status`, `actsis_litellm_budget`,
+  `actsis_litellm_models`, `actsis_litellm_logout`) registered via
+  `ctx.tool.transform` with JSON-Schema inputs and `{content}` results;
+  status/budget read the credential from the v2 integration store and
+  report auth type and expiry.
+- **Four slash commands** (`/actsis-litellm-status`, `-models`, `-budget`,
+  `-logout`) via `ctx.command.transform`.
+- **Session hooks scoped to the provider:** `model.request` (session-id
+  header), `context` (thinking-option normalization), and a read-only
+  `http.response` classifier for budget/throttle/overflow errors.
+- **Budget snapshot refresh** on `session.idle` via `ctx.event.subscribe`.
+- **TUI budget widget** ported to the v2 CLI plugin API
+  (`@opencode/plugin/tui`, `sidebar.footer` slot).
+
+### Fixed
+
+- **Local-directory loading:** OpenCode v2's directory resolver only probes
+  `<dir>/index` and `<dir>/tui` and ignores `package.json` `main`/`exports`;
+  root `index.js` / `tui.js` shims now re-export the built bundles.
+- **Immer frozen-object rejections:** transform callbacks are synchronous
+  and `Model.Info.default()` output is copied before mutation.
+- **Login-flow state clobber:** `runLoginFlow` wrote plugin state without
+  a target directory, overwriting the real state file from tests and
+  aborted logins (with `providerId: undefined`). `LoginConfig.stateDir` is
+  now threaded through, with regression tests pinning state isolation.
+- **Logout honesty:** the logout tool revokes the integration-sourced
+  refresh token and clears plugin state/cache, and reports that the stored
+  credential must be disconnected via OpenCode's native auth UI (no plugin
+  API deletes it).
+
+### Migration notes
+
+- After upgrading OpenCode to v2: rename `"plugin"` to `"plugins"` in
+  `opencode.json`, move the widget entry to `cli.json`, remove stale V1
+  packages from `cli.json`, restart the OpenCode server (`pkill -f
+  "opencode serve"`) so the cached location plugin set reloads, then run
+  `opencode auth login` and pick `actsis-litellm`.
+- Dependencies: `@opencode/plugin` ^2.0.4 (replaces `@opencode-ai/plugin`);
+  `@opentui/*` peers >= 0.5.10; `engines.opencode >= 2.0.0`.
+
 ## Unreleased
 
 ### Documentation
