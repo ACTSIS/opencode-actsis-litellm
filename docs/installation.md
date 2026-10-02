@@ -1,39 +1,31 @@
-# Installation guide
+# Guía de instalación
 
-This is the authoritative, step-by-step installation guide for the
-`opencode-actsis-litellm` plugin (server plugin + TUI budget widget). The
-[README](../README.md) keeps a short quick-start; this document is the
-complete reference.
+Esta es la guía de instalación autorizada y paso a paso para el plugin
+`opencode-actsis-litellm` (plugin de servidor + widget de budget para la TUI).
+El [README](../README.md) mantiene un inicio rápido breve; este documento es
+la referencia completa.
 
-All gateway URLs in examples use the public-safe placeholder
-`https://your-gateway.example.com` — replace it with your gateway's base URL
-when configuring.
+Todas las URLs del gateway en los ejemplos usan el placeholder seguro
+`https://your-gateway.example.com` — reemplázalo por la URL base de tu
+gateway al configurar.
 
-## Requirements
+## Requisitos
 
-- **OpenCode >= 2.0.0** (declared in the plugin's `engines`; verified against v2.0.20). The TUI budget
-  widget has been verified on OpenCode **2.0.20**.
-- **No manual dependency installs.** The plugin runs on the Bun runtime
-  embedded in OpenCode. Peer packages such as `@opentui/core`,
-  `@opentui/solid`, and `solid-js` are only needed for **building the plugin
-  from source** (they are dev dependencies); end users installing from GitHub
-  or npm do not install anything by hand.
+- **OpenCode >= 2.0.0** (declarado en los `engines` del plugin; verificado
+  contra **v2.0.20**). El widget de budget para la TUI también fue verificado
+  en OpenCode **2.0.20**.
+- **No requiere instalación manual de dependencias.** El plugin corre sobre
+  el runtime Bun embebido en OpenCode. Paquetes peers como `@opentui/core`,
+  `@opentui/solid` y `solid-js` solo son necesarios para **compilar el plugin
+  desde el código fuente** (son devDependencies); los usuarios finales que
+  instalan desde GitHub o npm no instalan nada a mano.
 
-## Recommended install: GitHub spec
+## Instalación recomendada: spec de GitHub
 
-Add the package spec to **both** OpenCode configuration files:
+Agrega el spec del paquete a **ambos** archivos de configuración de OpenCode:
 
-1. `~/.config/opencode/opencode.json` — registers the **server plugin**
-   (provider, auth, tools, commands):
-
-   ```json
-   {
-     "plugins": ["github:ACTSIS/opencode-actsis-litellm"]
-   }
-   ```
-
-2. `~/.config/opencode/cli.json` — registers the **budget widget** for the
-   TUI (same spec, separate file):
+1. `~/.config/opencode/opencode.json` — registra el **plugin de servidor**
+   (proveedor, auth, tools y comandos):
 
    ```json
    {
@@ -41,20 +33,32 @@ Add the package spec to **both** OpenCode configuration files:
    }
    ```
 
-The `git:github.com/ACTSIS/opencode-actsis-litellm` shorthand is also
-accepted in both files.
+2. `~/.config/opencode/cli.json` — registra el **widget de budget** para la
+   TUI (mismo spec, archivo separado):
 
-> **Dual-config requirement:** the `plugins` array lives in two different
-> files with two different roles. `opencode.json` alone gives you the
-> provider, login, tools, and commands; `cli.json` alone gives you the
-> sidebar budget widget. For the full experience, add the spec to **both**.
-> This applies to every install method below, not only the GitHub spec.
+   ```json
+   {
+     "plugins": ["github:ACTSIS/opencode-actsis-litellm"]
+   }
+   ```
 
-### Alternatives
+La forma abreviada `git:github.com/ACTSIS/opencode-actsis-litellm` también es
+aceptada en ambos archivos.
 
-The same dual-config rule applies to the other supported spec forms:
+> **Requisito de configuración dual:** el array `plugins` vive en dos
+> archivos con roles distintos. Solo `opencode.json` te da el proveedor, el
+> login, los tools y los comandos; solo `cli.json` te da el widget de budget
+> de la barra lateral. Para la experiencia completa, agrega el spec a
+> **ambos** archivos. Esto aplica a todos los métodos de instalación, no
+> solo al spec de GitHub. En OpenCode v1 la clave era `"plugin"` (singular) y
+> el widget se configuraba en `tui.json`; ambas formas ya no existen en v2.
 
-- **npm package** (once the package is published to npm):
+### Alternativas
+
+La misma regla de configuración dual aplica a las demás formas de spec
+soportadas:
+
+- **Paquete npm** (una vez publicado el paquete en npm):
 
   ```json
   {
@@ -62,102 +66,125 @@ The same dual-config rule applies to the other supported spec forms:
   }
   ```
 
-- **Local development path** (a clone of this repository):
+- **Ruta local de desarrollo** (un clon de este repositorio):
 
   ```json
   {
-    "plugins": ["/path/to/opencode-actsis-litellm"]
+    "plugins": ["/ruta/a/opencode-actsis-litellm"]
   }
   ```
 
-Use the same spec in `~/.config/opencode/opencode.json` **and**
-`~/.config/opencode/cli.json`.
+Usa el mismo spec en `~/.config/opencode/opencode.json` **y** en
+`~/.config/opencode/cli.json`. Para rutas locales, OpenCode v2 resuelve los
+directorios de plugins únicamente probando `<dir>/index` y `<dir>/tui` en la
+raíz del paquete, ignorando `package.json` `main`/`exports`; por eso el
+repositorio incluye los shims raíz `index.js` y `tui.js` que re-exportan los
+bundles de `dist/` (ver la nota de packaging al final de este documento).
 
-## Login walkthrough
+## Walkthrough de login
 
-Start OpenCode and run:
+Inicia OpenCode y ejecuta:
 
 ```
 opencode auth login
 ```
 
-1. **Select the provider.** Pick `actsis-litellm` (display name
-   "Actsis LiteLLM") from the provider list.
-2. **Gateway URL prompt (conditional).** The gateway URL is asked **only when
-   it is not already resolved**. Resolution precedence (highest first):
-   1. `ACTSIS_LITELLM_URL` environment variable
-   2. Plugin options (`{ package, options }` object form in `opencode.json`)
-   3. Stored plugin state (`~/.local/share/opencode/actsis-litellm/state.json`,
-      written by a previous login)
-   4. Interactive prompt
-3. **Sign-in method.** Choose **SSO (browser)** or **API key**:
-   - **SSO** — OAuth2 Authorization Code flow with PKCE (S256). Your browser
-     opens, you sign in through your identity provider, and the gateway
-     redirects back to a loopback callback (`127.0.0.1`, ephemeral port).
-     The callback window is **5 minutes** — complete the browser step within
-     that time.
-   - **API key** — OpenCode's native prompt ("Enter your API key") captures
-     the key directly; the key is never passed to the plugin. The key is
-     stored in OpenCode's credential store and is **validated by the gateway
-     on first use**, not at login time.
+1. **Selecciona el proveedor.** Escoge `actsis-litellm` (nombre visible
+   "Actsis LiteLLM") de la lista de proveedores.
+2. **Prompt de URL del gateway (condicional).** La URL solo se pregunta
+   **cuando no está ya resuelta**. Precedencia de resolución (de mayor a
+   menor):
+   1. Variable de entorno `ACTSIS_LITELLM_URL`
+   2. Opciones del plugin (forma objeto `{ package, options }` en
+      `opencode.json`)
+   3. Estado del plugin almacenado
+      (`~/.local/share/opencode/actsis-litellm/state.json`, escrito por un
+      login anterior)
+   4. Prompt interactivo
+3. **Método de inicio de sesión.** Elige **SSO (browser)** o **API key**:
+   - **SSO** — flujo OAuth2 Authorization Code con PKCE (S256). Se abre tu
+     navegador, inicias sesión a través de tu proveedor de identidad y el
+     gateway redirige a un callback loopback (`127.0.0.1`, puerto efímero).
+     La ventana del callback es de **5 minutos** — completa el paso del
+     navegador dentro de ese tiempo.
+   - **API key** — el prompt nativo de OpenCode ("Enter your API key")
+     captura la clave directamente; la clave nunca pasa por el plugin. Se
+     guarda en el almacén de credenciales del store nativo de integraciones
+     de OpenCode y es **validada por el gateway en el primer uso**, no
+     durante el login.
 
-Credentials are persisted by OpenCode in `~/.local/share/opencode/auth.json`.
-The plugin keeps only non-secret gateway metadata in
-`~/.local/share/opencode/actsis-litellm/state.json`.
+Las credenciales las persiste OpenCode en su almacén nativo de
+integraciones (SQLite en `~/.local/share/opencode/opencode.db`, tabla
+`credential`). El plugin guarda solo metadatos no secretos del gateway en
+`~/.local/share/opencode/actsis-litellm/state.json`. El antiguo
+`~/.local/share/opencode/auth.json` de v1 se lee únicamente como fallback
+legado para instalaciones previas a v2.
 
-## Post-install verification
+## Checklist de verificación post-instalación
 
-After installing and logging in, verify each item:
+Tras instalar e iniciar sesión, verifica cada ítem:
 
-- [ ] **Provider registered** — `actsis-litellm` (display name
-      "Actsis LiteLLM") appears in the `opencode auth login` provider list.
-- [ ] **Credential + cache visible** — `/actsis-litellm-status` reports the
-      credential state (SSO/API key), the gateway URL, and the catalog cache
-      age and model count.
-- [ ] **Catalog syncs** — `/actsis-litellm-models` performs a fresh sync and
-      reports added/removed models.
-- [ ] **Model picker refreshed** — OpenCode reads the model list at startup.
-      After the first catalog sync, **restart OpenCode** so new models appear
-      in the picker.
-- [ ] **Budget widget renders** — in the TUI, the budget gauge
-      (`▰▰▰▱▱▱▱▱ 42% · $12.40 of $30.00`) appears in the **sidebar footer**
-      once budget data exists (the plugin persists a snapshot at the end of
-      each turn; the widget renders nothing when there is no data).
+- [ ] **Proveedor registrado** — `actsis-litellm` (nombre visible
+      "Actsis LiteLLM") aparece en la lista de proveedores de
+      `opencode auth login`.
+- [ ] **Credencial y caché visibles** — `/actsis-litellm-status` reporta el
+      estado de la credencial (SSO/API key), la URL del gateway, y la
+      antigüedad y el conteo de modelos del caché del catálogo.
+- [ ] **El catálogo se sincroniza** — `/actsis-litellm-models` ejecuta una
+      sincronización fresca y reporta los modelos agregados/eliminados.
+- [ ] **Selector de modelos actualizado** — OpenCode lee la lista de modelos
+      al arrancar. Tras la primera sincronización del catálogo, **reinicia
+      OpenCode** para que los modelos nuevos aparezcan en el selector.
+- [ ] **El widget de budget renderiza** — en la TUI, el gauge de budget
+      (`▰▰▰▱▱▱▱▱ 42% · $12.40 of $30.00`) aparece en el **pie de la barra
+      lateral** una vez que existen datos de budget (el plugin persiste un
+      snapshot al final de cada turno; el widget no renderiza nada cuando no
+      hay datos).
 
 ## Troubleshooting
 
-| Symptom | What to do |
-|---------|------------|
-| **Provider missing from `opencode auth login`** | The plugin cache may be empty after a failed or partial install. Re-install the plugin (both config files) and restart OpenCode so it re-registers. |
-| **Budget widget not rendering** | Verify the `cli.json` entry exists. The widget requires a TUI build with plugin support. For a file-plugin fallback (local checkout), OpenCode's TUI loader needs an absolute path whose module default-exports a v2 `Plugin.define({ id, setup })` from the compiled bundle (`main` -> `dist/tui.js`); raw `src/*.tsx` entries are not resolved. |
-| **Models missing from the picker** | Run `/actsis-litellm-models` to force a sync, check `/actsis-litellm-status` for the cache model count, then **restart OpenCode** (the picker is refreshed at startup). |
-| **Login times out** | The SSO loopback callback window is 5 minutes. If the browser step took longer, run `opencode auth login` again. |
-| **Refresh refused (`invalid_grant`)** | The SSO refresh token expired, was rotated elsewhere, or was revoked. Log in again with `opencode auth login`. |
-| **Credential rejected by the gateway** | API keys are not pre-validated at login; the gateway validates them on first use. Verify the key in the gateway UI and log in again. For SSO, log in again to obtain fresh tokens. |
+| Síntoma | Qué hacer |
+|---------|-----------|
+| **El proveedor no aparece en `opencode auth login`** | El caché de plugins puede haber quedado vacío tras una instalación fallida o parcial. Reinstala el plugin (ambos archivos de configuración) y reinicia OpenCode para que se registre de nuevo. |
+| **El widget de budget no renderiza** | Verifica que exista la entrada en `cli.json`. El widget requiere una compilación de la TUI con soporte de plugins. Para un plugin de directorio local, el loader de la TUI de OpenCode v2 resuelve `<dir>/tui.js` (shim raíz que re-exporta `dist/tui.js`, un `Plugin.define({ id, setup })` v2); las entradas `src/*.tsx` crudas no se resuelven. Los paquetes npm/git se resuelven por `main`/`exports`. |
+| **Modelos ausentes en el selector** | Ejecuta `/actsis-litellm-models` para forzar la sincronización, revisa el conteo de modelos del caché con `/actsis-litellm-status`, y **reinicia OpenCode** (el selector se refresca al arrancar). |
+| **El login expira** | La ventana del callback loopback de SSO es de 5 minutos. Si el paso del navegador tomó más tiempo, ejecuta `opencode auth login` de nuevo. |
+| **Refresh rechazado (`invalid_grant`)** | El refresh token de SSO expiró, fue rotado en otro lugar o fue revocado. Inicia sesión de nuevo con `opencode auth login`. |
+| **El gateway rechaza la credencial** | Las API keys no se pre-validan durante el login; el gateway las valida en el primer uso. Verifica la clave en la UI del gateway e inicia sesión de nuevo. Para SSO, inicia sesión de nuevo para obtener tokens frescos. |
 
-## Packaging note: why `dist/` is committed
+## Nota de packaging: por qué `dist/` está commiteado
 
-OpenCode installs npm/git packages with `--ignore-scripts`, so a `prepack`
-build step **never runs** on the user's machine. To make installs work
-without any build step, the compiled `dist/` bundles are **committed to the
-repository** and regenerated whenever `src/` changes (`npm run build`, then
-commit the new `dist/`).
+OpenCode instala paquetes de npm/git con `--ignore-scripts`, por lo que un
+paso de build `prepack` **nunca se ejecuta** en la máquina del usuario. Para
+que las instalaciones funcionen sin ningún paso de build, los bundles
+compilados de `dist/` están **commiteados en el repositorio** y se
+regeneran cada vez que cambia `src/` (`npm run build` y commit de los nuevos
+`dist/`).
 
-The TUI loader resolves npm/git packages only through the package entrypoint
-contract: `main` (and the `"."` export) must point at the server bundle
-(`dist/index.js`), with the `"./tui"` export pointing at the CLI bundle
-(`dist/tui.js`):
+V2 resuelve los paquetes instalados de forma distinta según el mecanismo de
+instalación:
 
-```json
-{
-  "main": "./dist/index.js",
-  "exports": {
-    ".": { "import": "./dist/index.js" },
-    "./tui": { "import": "./dist/tui.js" }
+- **Paquetes npm/git:** el loader resuelve por el contrato de entrypoints del
+  `package.json` — `main` (y la export `"."`) apunta al bundle del servidor
+  (`dist/index.js`), y la export `"./tui"` apunta al bundle de la CLI
+  (`dist/tui.js`):
+
+  ```json
+  {
+    "main": "./dist/index.js",
+    "exports": {
+      ".": { "import": "./dist/index.js" },
+      "./tui": { "import": "./dist/tui.js" }
+    }
   }
-}
-```
+  ```
 
-Raw `src/*.tsx` entrypoints are skipped silently by the loader. If you build
-from source, run `npm run build` and commit the regenerated `dist/` files
-before installing from a local path.
+- **Directorios locales:** el resolver de OpenCode v2 solo prueba
+  `<dir>/index` y `<dir>/tui` en la raíz del paquete e ignora
+  `package.json` `main`/`exports`. Por eso el repositorio incluye los shims
+  raíz `index.js` y `tui.js`, que re-exportan `dist/index.js` y
+  `dist/tui.js` respectivamente.
+
+Las entradas crudas `src/*.ts`/`src/*.tsx` se omiten silenciosamente por el
+loader. Si compilas desde el código fuente, ejecuta `npm run build` y
+commitea los `dist/` regenerados antes de instalar desde una ruta local.

@@ -1,85 +1,91 @@
 # opencode-actsis-litellm
 
-An [OpenCode](https://opencode.ai) plugin that adds an **Actsis LiteLLM
-gateway** as a dynamic model provider with OAuth2 PKCE sign-in (SSO), optional
-API-key auth, and a dynamic model catalog.
+Plugin de [OpenCode](https://opencode.ai) que agrega un gateway **Actsis
+LiteLLM** como proveedor de modelos dinámico, con inicio de sesión OAuth2 PKCE
+(SSO), autenticación opcional por API key y un catálogo de modelos dinámico.
 
-It hooks into OpenCode's native `/login` flow, discovers the gateway's model
-catalog at runtime, and routes chat requests through the OpenAI-compatible
-`/v1/chat/completions` endpoint.
+El plugin se integra al flujo nativo `/login` de OpenCode v2, descubre el
+catálogo de modelos del gateway en tiempo de ejecución y enruta las
+peticiones de chat por el endpoint OpenAI-compatible
+`/v1/chat/completions`.
 
-> **Installing?** Start with the step-by-step guide:
-> **[docs/installation.md](docs/installation.md)** — requirements, dual
-> config setup, login walkthrough, verification checklist, and
-> troubleshooting.
+> **¿Vas a instalarlo?** Comienza con la guía paso a paso:
+> **[docs/installation.md](docs/installation.md)** — requisitos, configuración
+> dual, walkthrough de login, checklist de verificación y troubleshooting.
 
-## Quick start
+Verificado en OpenCode **v2.0.20** con un gateway real (OAuth activo,
+catálogo sincronizado y budget operativo).
 
-Add the GitHub spec to **both** OpenCode configuration files (the server
-plugin and the TUI budget widget are registered separately):
+## Inicio rápido
+
+Agrega el spec de GitHub a **ambos** archivos de configuración de OpenCode
+(el plugin de servidor y el widget de budget de la TUI se registran por
+separado):
 
 ```json
-// ~/.config/opencode/opencode.json (server plugin)
+// ~/.config/opencode/opencode.json (plugin de servidor)
 {
   "plugins": ["github:ACTSIS/opencode-actsis-litellm"]
 }
 
-// ~/.config/opencode/cli.json (budget widget)
+// ~/.config/opencode/cli.json (widget de budget)
 {
   "plugins": ["github:ACTSIS/opencode-actsis-litellm"]
 }
 ```
 
-Then run `opencode auth login`, select `actsis-litellm`, and follow the
-prompts. See **[docs/installation.md](docs/installation.md)** for the full
-walkthrough, alternative install methods (npm package, local path), and the
-post-install verification checklist.
+Luego ejecuta `opencode auth login`, selecciona `actsis-litellm` y sigue los
+pasos. Consulta **[docs/installation.md](docs/installation.md)** para el
+walkthrough completo, los métodos alternativos de instalación (paquete npm,
+ruta local) y el checklist de verificación post-instalación.
 
 ## Login
 
-Start OpenCode and run:
+Inicia OpenCode y ejecuta:
 
 ```
 opencode auth login
 ```
 
-1. Select the `actsis-litellm` provider.
-2. The **gateway URL** prompt appears when the URL is not already configured
-   (see [Configuration](#configuration) for how to set it ahead of time). This
-   keeps the plugin zero-config: first-time users are simply asked.
-3. Choose a sign-in method:
-   - **SSO (browser)** — OAuth2 Authorization Code flow with PKCE (S256). Your
-     browser opens, you sign in through your identity provider, and the gateway
-     redirects back to a local loopback callback.
-   - **API key** — OpenCode itself prompts for the API key ("Enter your API
-     key") and stores it in its credential store. The plugin only asks for the
-     gateway URL when it is not already configured; the key is validated by
-     the gateway on first use (the plugin does not pre-validate it at login).
+1. Selecciona el proveedor `actsis-litellm`.
+2. El prompt de **URL del gateway** aparece cuando la URL no está ya
+   configurada (ver [Configuración](#configuración) para definirla con
+   antelación). Así el plugin funciona sin configuración previa: a los
+   usuarios nuevos simplemente se les pregunta.
+3. Elige el método de inicio de sesión:
+   - **SSO (browser)** — flujo OAuth2 Authorization Code con PKCE (S256). Se
+     abre tu navegador, inicias sesión a través de tu proveedor de identidad
+     y el gateway redirige a un callback local loopback.
+   - **API key** — el propio OpenCode solicita la clave ("Enter your API
+     key") y la guarda en su almacén de credenciales. El plugin solo pide la
+     URL del gateway cuando no está configurada; la clave la valida el
+     gateway en el primer uso (el plugin no la pre-valida durante el login).
 
-Credentials are persisted by OpenCode in its own credential store; the plugin
-keeps only non-secret gateway metadata in its state file (see
-[Security notes](#security-notes)).
+Las credenciales las persiste OpenCode en su almacén nativo de integraciones
+(SQLite, no en un archivo JSON); el plugin guarda en su archivo de estado
+únicamente metadatos no secretos del gateway (ver
+[Notas de seguridad](#notas-de-seguridad)).
 
-## Configuration
+## Configuración
 
-Zero-config by default. The gateway base URL is resolved with the following
-precedence (highest first):
+Funciona sin configuración por defecto. La URL base del gateway se resuelve
+con la siguiente precedencia (de mayor a menor):
 
-| Priority | Source | Example |
-|----------|--------|---------|
-| 1 | Environment variable | `export ACTSIS_LITELLM_URL=https://your-gateway.example.com` |
-| 2 | Plugin options (object form in `opencode.json`) | `{ "package": "opencode-actsis-litellm", "options": { "url": "https://your-gateway.example.com" } }` |
-| 3 | Stored plugin state (written by a previous login) | `~/.local/share/opencode/actsis-litellm/state.json` |
-| 4 | Interactive prompt during `opencode auth login` | Gateway URL prompt with validation |
+| Prioridad | Fuente | Ejemplo |
+|-----------|--------|---------|
+| 1 | Variable de entorno | `export ACTSIS_LITELLM_URL=https://your-gateway.example.com` |
+| 2 | Opciones del plugin (forma objeto en `opencode.json`) | `{ "package": "opencode-actsis-litellm", "options": { "url": "https://your-gateway.example.com" } }` |
+| 3 | Estado del plugin almacenado (escrito por un login anterior) | `~/.local/share/opencode/actsis-litellm/state.json` |
+| 4 | Prompt interactivo durante `opencode auth login` | Prompt de URL del gateway con validación |
 
-Plugin options use the `{ package, options }` object form of the `plugins`
-(array) config key:
+Las opciones del plugin usan la forma objeto `{ package, options }` de la
+clave de configuración `plugins` (array):
 
 ```json
 {
   "plugins": [
     {
-      "package": "git:github.com/ACTSIS/opencode-actsis-litellm",
+      "package": "github:ACTSIS/opencode-actsis-litellm",
       "options": {
         "url": "https://your-gateway.example.com",
         "providerId": "actsis-litellm",
@@ -91,133 +97,154 @@ Plugin options use the `{ package, options }` object form of the `plugins`
 }
 ```
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `url` | string | — | Gateway base URL. A trailing `/v1` is stripped automatically. |
-| `providerId` | string | `actsis-litellm` | Provider ID registered in OpenCode. |
-| `catalogTtlMinutes` | number | `15` | Model catalog cache time-to-live in minutes. |
-| `requestTimeoutMs` | number | `30000` | Per-request timeout for gateway HTTP calls in milliseconds. |
+| Opción | Tipo | Valor por defecto | Descripción |
+|--------|------|-------------------|-------------|
+| `url` | string | — | URL base del gateway. Una `/v1` final se elimina automáticamente. |
+| `providerId` | string | `actsis-litellm` | ID del proveedor registrado en OpenCode. |
+| `catalogTtlMinutes` | number | `15` | Tiempo de vida (TTL) del caché del catálogo de modelos, en minutos. |
+| `requestTimeoutMs` | number | `30000` | Timeout por petición HTTP hacia el gateway, en milisegundos. |
 
-## Auth methods
+## Métodos de autenticación
 
-| Method | How it works |
-|--------|--------------|
-| **SSO (browser)** | OAuth2 Authorization Code + PKCE (S256). The plugin fetches `/.well-known/litellm-cli-auth` discovery metadata, performs dynamic client registration, opens the browser, and captures the redirect on a loopback-only callback server (`127.0.0.1`, ephemeral port). The callback window is **5 minutes**. Access and refresh tokens are stored by OpenCode; refresh tokens are rotated on renewal. |
-| **API key** | OpenCode prompts natively for the API key ("Enter your API key") and stores it in its credential store. The plugin only declares the gateway URL prompt (asked when the URL is not already configured). The key is validated by the gateway on first use. API-key credentials never expire and are never refreshed. |
+| Método | Cómo funciona |
+|--------|---------------|
+| **SSO (browser)** | OAuth2 Authorization Code + PKCE (S256). El plugin obtiene los metadatos de discovery en `/.well-known/litellm-cli-auth`, registra el cliente de forma dinámica, abre el navegador y captura la redirección en un servidor callback exclusivamente loopback (`127.0.0.1`, puerto efímero). La ventana del callback es de **5 minutos**. OpenCode almacena los tokens de acceso y refresh y los rota en cada renovación. |
+| **API key** | OpenCode pide la clave de forma nativa ("Enter your API key") y la guarda en su almacén de credenciales. El plugin solo declara el prompt de la URL del gateway (preguntado cuando no está configurada). La clave la valida el gateway en el primer uso. Las credenciales de API key nunca expiran y nunca se renuevan. |
 
-## Model catalog
+## Catálogo de modelos
 
-The provider's model list is synced from the gateway at `/v1/models` and
-enriched with details from `/model/info` when available.
+La lista de modelos del proveedor se sincroniza desde el gateway por
+`/v1/models` y se enriquece con los detalles de `/v1/model/info` cuando está
+disponible.
 
-- **Chat-mode filter** — Non-chat models (embedding, whisper, TTS, rerank,
-  transcription, moderation, audio, and similar) are excluded, using per-model
-  mode metadata when the gateway reports it and a conservative name heuristic
-  otherwise.
-- **Cache location:** `~/.local/share/opencode/actsis-litellm/models-cache.json`
-- **Default TTL:** 15 minutes (`catalogTtlMinutes`)
-- **Force sync:** Use the `actsis_litellm_models` tool or the `/actsis-litellm-models`
-  command.
-- **Model picker refresh:** OpenCode reads the model list at startup. After a
-  catalog sync, **restart OpenCode** to see new models in the picker.
-- **Context/output defaults:** `limit.context` and `limit.output` default to
-  `128000` and `16384` when the gateway does not report them.
-- **Cost mapping:** LiteLLM input/output/cache costs are mapped to OpenCode
-  cost fields per 1 million tokens. Missing or zero values default to `0`.
-  When `/v1/model/info` fails or is empty the plugin falls back to the
-  paginated `/v2/model/info` endpoint (up to 5 pages of 100), and tiered
-  input/output pricing above 128k/200k/272k/512k tokens is surfaced as native
-  OpenCode cost tiers when the gateway reports it.
+- **Filtro de modo chat** — Se excluyen los modelos que no son de chat
+  (embedding, whisper, TTS, rerank, transcripción, moderación, audio y
+  similares), usando los metadatos de modo por modelo cuando el gateway los
+  reporta y una heurística conservadora por nombre en caso contrario.
+- **Ubicación del caché:**
+  `~/.local/share/opencode/actsis-litellm/models-cache.json`
+- **TTL por defecto:** 15 minutos (`catalogTtlMinutes`)
+- **Sincronización forzada:** usa el tool `actsis_litellm_models` o el
+  comando `/actsis-litellm-models`.
+- **Actualización del selector de modelos:** OpenCode lee la lista de
+  modelos al arrancar. Tras una sincronización del catálogo, **reinicia
+  OpenCode** para ver los modelos nuevos en el selector.
+- **Valores por defecto de contexto/salida:** `limit.context` y
+  `limit.output` se establecen en `128000` y `16384` cuando el gateway no
+  los reporta.
+- **Mapeo de costos:** los costos de entrada/salida/caché de LiteLLM se
+  mapean a los campos de costo de OpenCode por millón de tokens. Los valores
+  ausentes o en cero se establecen en `0`. Cuando `/v1/model/info` falla o
+  queda vacío, el plugin recurre al endpoint paginado `/v2/model/info` (hasta
+  5 páginas de 100), y los precios escalonados de entrada/salida sobre
+  128k/200k/272k/512k tokens se exponen como cost tiers nativos de OpenCode
+  cuando el gateway los reporta.
 
-## Tools and commands
+## Tools y comandos
 
-| Tool | Command | Description |
+| Tool | Comando | Descripción |
 |------|---------|-------------|
-| `actsis_litellm_status` | `/actsis-litellm-status` | Show credential state, catalog cache age/count, gateway URL, and budget info (falls back to the last cached snapshot between turns). |
-| `actsis_litellm_models` | `/actsis-litellm-models` | Force a fresh model catalog sync and report added/removed models. |
-| `actsis_litellm_logout` | `/actsis-litellm-logout` | Revoke the refresh token (SSO), clear local credentials, state, and cache. |
-| `actsis_litellm_budget` | `/actsis-litellm-budget` | Force a budget refresh and report the exact outcome (gauge line or precise failure reason, plus the last known snapshot when the live fetch fails). |
+| `actsis_litellm_status` | `/actsis-litellm-status` | Muestra estado de credenciales, antigüedad y tamaño del caché del catálogo, URL del gateway e información de budget (recurre al último snapshot cacheado entre turnos). |
+| `actsis_litellm_models` | `/actsis-litellm-models` | Fuerza una sincronización fresca del catálogo de modelos y reporta modelos agregados/eliminados. |
+| `actsis_litellm_logout` | `/actsis-litellm-logout` | Revoca el refresh token (SSO), limpia el estado local y el caché. |
+| `actsis_litellm_budget` | `/actsis-litellm-budget` | Fuerza una actualización del budget y reporta el resultado exacto (línea de gauge o el motivo preciso del fallo, además del último snapshot conocido cuando la lectura en vivo falla). |
 
-The commands are thin templates that instruct the agent to call the matching
-tool and summarize the result, so they work in both the TUI and server mode.
+Los comandos son plantillas ligeras que indican al agente llamar al tool
+correspondiente y resumir el resultado, de modo que funcionan tanto en modo
+TUI como en modo servidor.
 
-## TUI widget
+## Widget de la TUI
 
-An optional TUI widget renders the budget gauge in the OpenCode sidebar
-footer. Enable it by adding the package spec to the `plugins` array of
-`~/.config/opencode/cli.json` — **in addition to** the `opencode.json`
-entry; both config files are required (see
-[docs/installation.md](docs/installation.md)). The widget requires a TUI
-build with plugin support and works only with the committed `dist/` bundles:
-OpenCode's TUI loader resolves npm/git packages through the `main` ->
-`dist/tui.js` entrypoint contract, so raw `src/*.tsx` entries are never
-loaded.
+Un widget opcional de la TUI renderiza el gauge de budget en el pie de la
+barra lateral de OpenCode. Se activa agregando el spec del paquete al array
+`plugins` de `~/.config/opencode/cli.json` — **además de** la entrada en
+`opencode.json`; ambos archivos de configuración son necesarios (ver
+[docs/installation.md](docs/installation.md)).
 
-The widget reads the snapshot persisted on `session.idle` (the end of each
-agent turn, and after `actsis_litellm_budget` refreshes it), refreshing on
-startup and after each turn with a short debounce so the server-side write
-wins the race. It renders nothing when no budget data is available.
+El widget lee el snapshot persistido en `session.idle` (fin de cada turno del
+agente, y después de que `actsis_litellm_budget` lo refresque); se actualiza
+al arrancar y tras cada turno con una breve espera (debounce) para que la
+escritura del lado servidor gane la carrera. No renderiza nada cuando no hay
+datos de budget.
 
-### Packaging note
+### Nota de packaging
 
-The `dist/` bundles are committed because OpenCode installs git/npm packages
-with `--ignore-scripts`; a `prepack` build step never runs. `main` and
-`exports` point at the pre-built `dist/*.js` entrypoints (`dist/index.js` for
-the server plugin, `dist/tui.js` for the TUI plugin), mirroring the entrypoint
-resolution OpenCode's TUI loader performs for npm/git packages. After changing
-`src/`, run `npm run build` and commit the regenerated `dist/` files.
+Los bundles de `dist/` están commiteados porque OpenCode instala paquetes de
+git/npm con `--ignore-scripts`; un build de `prepack` nunca se ejecuta en la
+máquina del usuario. Los shims raíz `index.js` y `tui.js` re-exportan los
+bundles compilados (`dist/index.js` y `dist/tui.js`): el resolver de OpenCode
+v2 para directorios locales solo prueba `<dir>/index` y `<dir>/tui` e ignora
+el `package.json`. Los paquetes instalados por npm/git se resuelven en cambio
+por los campos `main`/`exports`. Tras modificar `src/`, ejecuta
+`npm run build` y commitea los `dist/` regenerados.
 
-## Architecture
+## Arquitectura
 
-For the technical details — module map, OpenCode hooks and integration
-points, the provider/auth loader contract, the packaging and TUI-loader
-behavior, and the budget snapshot lifecycle — see:
+Para los detalles técnicos — mapa de módulos de `src/`, puntos de integración
+de OpenCode v2, contrato de provider/integraciones, comportamiento de
+packaging y del loader de la TUI, y el ciclo de vida del snapshot de
+budget — consulta:
 
-- [`docs/architecture.md`](docs/architecture.md) — module map and technical
-  overview.
-- [`docs/login-flow.md`](docs/login-flow.md) — the full OAuth2 PKCE login
-  sequence, refresh rotation, and logout flow.
+- [`docs/architecture.md`](docs/architecture.md) — mapa de módulos y vista
+  técnica general.
+- [`docs/login-flow.md`](docs/login-flow.md) — la secuencia completa de login
+  OAuth2 PKCE, la rotación de tokens y el flujo de logout.
 
-## Error hardening
+## Hardening de errores
 
-The plugin wraps gateway chat requests and normalizes the two most common
-failure modes into actionable messages:
+El plugin clasifica los errores de límite del gateway mediante el hook de
+sesión `http.response`, aplicado solo a este proveedor. Es una clasificación
+informativa: registra una advertencia en el log y **no reescribe la
+respuesta**.
 
-- **Budget exceeded** — Surfaced as `Budget exceeded: $<spend> of $<max> used —
-  top up the key budget or wait for the reset.`
-- **Throttling (429)** — Surfaced with the rate-limit type and reset time, for
-  example `Rate limit reached (tpm). Resets at 14:32 (~3 min). OpenCode will
-  retry automatically.` OpenCode retries 429 responses with backoff natively.
-- **Context overflow** — Error messages matching context-window overflow
-  patterns are prefixed with `context_length_exceeded` so OpenCode's
-  compaction logic can react and trim the conversation.
+- **Context overflow** — mensajes que coinciden con patrones de overflow de
+  la ventana de contexto (`context_length_exceeded` y variantes) generan la
+  advertencia `context overflow on model <modelID>`, lo que permite a la
+  lógica de compactación de OpenCode reaccionar y recortar la conversación.
+- **Budget agotado** — los errores estructurados de `budget_exceeded`
+  generan una advertencia con el detalle del gasto y el límite, por ejemplo
+  `Budget exceeded: $<spend> of $<max> used — top up the key budget or wait
+  for the reset.`
+- **Throttling (429)** — los errores de `throttling_error` generan una
+  advertencia con el tipo de rate limit y la hora de reinicio, por ejemplo
+  `Rate limit reached (tpm). Resets at 14:32 (~3 min).`
+
+Para una respuesta accionable al usuario, los tools `actsis_litellm_status`
+y `actsis_litellm_budget` reportan el motivo exacto de cada fallo (sin
+credencial, URL del gateway sin configurar, credencial rechazada, error de
+red/timeout).
 
 ## Troubleshooting
 
-| Symptom | What to do |
-|---------|------------|
-| Provider not configured / gateway URL missing | Run `opencode auth login`, select `actsis-litellm`, and enter the gateway URL. Or set `ACTSIS_LITELLM_URL` / add `url` to the plugin options. |
-| Login timed out | The loopback callback window is 5 minutes. If the browser step took longer, run `opencode auth login` again. |
-| Refresh refused (`invalid_grant`) | The SSO refresh token expired, was rotated elsewhere, or was revoked. Log in again. |
-| Models not appearing in the picker | Run `/actsis-litellm-models` to force a sync, then restart OpenCode. Check `/actsis-litellm-status` for cache count. |
-| Credential rejected by the gateway | For SSO, log in again to obtain fresh tokens. For API keys, verify the key in the gateway UI and log in again — the key is only checked by the gateway on first use, not during login. |
+| Síntoma | Qué hacer |
+|---------|----------|
+| Proveedor sin configurar / falta la URL del gateway | Ejecuta `opencode auth login`, selecciona `actsis-litellm` e introduce la URL del gateway. O define `ACTSIS_LITELLM_URL` / agrega `url` a las opciones del plugin. |
+| El login expiró | La ventana del callback loopback es de 5 minutos. Si el paso del navegador tomó más tiempo, ejecuta `opencode auth login` de nuevo. |
+| Refresh rechazado (`invalid_grant`) | El refresh token de SSO expiró, fue rotado en otro lugar o fue revocado. Inicia sesión de nuevo. |
+| Los modelos no aparecen en el selector | Ejecuta `/actsis-litellm-models` para forzar la sincronización y luego reinicia OpenCode. Revisa el conteo del caché con `/actsis-litellm-status`. |
+| El gateway rechaza la credencial | Para SSO, inicia sesión de nuevo para obtener tokens frescos. Para API keys, verifica la clave en la UI del gateway y vuelve a iniciar sesión — la clave solo se comprueba por el gateway en el primer uso, no durante el login. |
+| La credencial sigue activa tras `actsis_litellm_logout` | El tool revoca el refresh token y limpia el estado local, pero la credencial guardada en el almacén de integraciones de OpenCode debe desconectarse desde la UI de auth nativa: no existe una API de plugin para borrarla. |
 
-## Security notes
+## Notas de seguridad
 
-- The OAuth callback server binds to `127.0.0.1` on an ephemeral port only and
-  handles a single `/callback` request per login.
-- No gateway hostname, IP, token, or user-identifiable data is embedded in the
-  package or this repository.
-- OAuth credentials and API keys are stored by OpenCode in
-  `~/.local/share/opencode/auth.json` — the plugin does not write tokens itself.
-- The plugin's own state file, `~/.local/share/opencode/actsis-litellm/state.json`,
-  contains only non-secret gateway metadata (gateway URL, discovery snapshot,
-  client ID, auth mode). No tokens are stored there.
-- No tokens or gateway URLs appear in OpenCode config files.
+- El servidor callback de OAuth se enlaza únicamente a `127.0.0.1` en un
+  puerto efímero y atiende una sola petición `/callback` por login.
+- No se incluye ningún hostname del gateway, IP, token ni dato identificable
+  de usuario ni en el paquete ni en este repositorio.
+- OAuth, credenciales y API keys los almacena OpenCode en su almacén nativo
+  de integraciones (SQLite en `~/.local/share/opencode/opencode.db`); el
+  plugin no escribe tokens por sí mismo. El antiguo `auth.json` solo se lee
+  como fallback legado para instalaciones previas a v2.
+- El archivo de estado propio del plugin,
+  `~/.local/share/opencode/actsis-litellm/state.json`, contiene solo
+  metadatos no secretos del gateway (URL, snapshot de discovery, client ID,
+  modo de autenticación). No se almacenan tokens ahí.
+- Ningún token ni URL del gateway aparece en los archivos de configuración de
+  OpenCode.
 
-## License
+## Licencia
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — ver [`LICENSE`](LICENSE).
 
 ---
 

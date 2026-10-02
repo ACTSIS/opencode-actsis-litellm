@@ -1,222 +1,251 @@
 # Changelog
 
-## 0.2.0 — OpenCode v2 plugin API
+## 0.2.0 — API de plugins de OpenCode v2
 
-### Breaking changes
+### Cambios incompatibles (breaking)
 
-- **Requires OpenCode >= 2.0.0.** OpenCode v2 dropped the v1 plugin
-  contract; v1 plugin implementations are silently dropped by the v2
-  loader. The plugin now default-exports
-  `Plugin.define({ id, setup(ctx) })` from `@opencode/plugin`.
-- **Config rename:** the `"plugin"` key in `opencode.json` is now
-  `"plugins"`, and the terminal widget is configured in the global
-  `cli.json` (v2 auto-migrates `tui.json`, but stale V1 package entries
-  carried into `cli.json` stall plugin reconciliation — remove them).
-- **Credential storage moved to OpenCode's native integration store.**
-  Login is now an integration flow (OAuth `sso-browser` method + native
-  API-key method); OpenCode stores and rotates tokens. The legacy v1
-  `auth.json` file is only read as a fallback for pre-v2 state.
+- **Requiere OpenCode >= 2.0.0.** OpenCode v2 eliminó el contrato de plugins
+  v1; las implementaciones v1 son descartadas silenciosamente por el loader
+  de v2. El plugin ahora exporta por defecto
+  `Plugin.define({ id, setup(ctx) })` desde `@opencode/plugin`.
+- **Renombramiento de configuración:** la clave `"plugin"` en
+  `opencode.json` ahora es `"plugins"`, y el widget de la terminal se
+  configura en el archivo global `cli.json` (v2 migra automáticamente
+  `tui.json`, pero las entradas de paquetes v1 obsoletas arrastradas a
+  `cli.json` bloquean la reconciliación de plugins — elimínalas).
+- **El almacenamiento de credenciales se movió al store nativo de
+  integraciones de OpenCode.** El login ahora es un flujo de integración
+  (método OAuth `sso-browser` + método nativo de API key); OpenCode almacena
+  y rota los tokens. El archivo `auth.json` legado de v1 solo se lee como
+  fallback para estado previo a v2.
 
-### Added
+### Agregado
 
-- **OpenAI-compatible dynamic provider for v2** — `ctx.provider.transform`
-  registers the gateway provider bound to its integration via
-  `integrationID`, with the live model catalog mapped onto v2 `Model.Info`
-  (limits, capabilities, tiered costs, variants).
-- **Four tools** (`actsis_litellm_status`, `actsis_litellm_budget`,
-  `actsis_litellm_models`, `actsis_litellm_logout`) registered via
-  `ctx.tool.transform` with JSON-Schema inputs and `{content}` results;
-  status/budget read the credential from the v2 integration store and
-  report auth type and expiry.
-- **Four slash commands** (`/actsis-litellm-status`, `-models`, `-budget`,
-  `-logout`) via `ctx.command.transform`.
-- **Session hooks scoped to the provider:** `model.request` (session-id
-  header), `context` (thinking-option normalization), and a read-only
-  `http.response` classifier for budget/throttle/overflow errors.
-- **Budget snapshot refresh** on `session.idle` via `ctx.event.subscribe`.
-- **TUI budget widget** ported to the v2 CLI plugin API
-  (`@opencode/plugin/tui`, `sidebar.footer` slot).
+- **Proveedor dinámico OpenAI-compatible para v2** — `ctx.provider.transform`
+  registra el proveedor del gateway ligado a su integración vía
+  `integrationID`, con el catálogo de modelos en vivo mapeado a `Model.Info`
+  de v2 (límites, capacidades, costos escalonados, variants).
+- **Cuatro tools** (`actsis_litellm_status`, `actsis_litellm_budget`,
+  `actsis_litellm_models`, `actsis_litellm_logout`) registrados vía
+  `ctx.tool.transform` con inputs JSON Schema y resultados `{content}`;
+  status/budget leen la credencial del store de integraciones de v2 y
+  reportan el tipo y la expiración de la auth.
+- **Cuatro comandos slash** (`/actsis-litellm-status`, `-models`, `-budget`,
+  `-logout`) vía `ctx.command.transform`.
+- **Hooks de sesión con scope al proveedor:** `model.request` (header con el
+  session-id), `context` (normalización de la opción thinking) y un
+  clasificador `http.response` de solo lectura para errores de
+  budget/throttle/overflow.
+- **Actualización del snapshot de budget** en `session.idle` vía
+  `ctx.event.subscribe`.
+- **Widget de budget para la TUI** portado a la API v2 de plugins CLI
+  (`@opencode/plugin/tui`, slot `sidebar.footer`).
 
-### Fixed
+### Corregido
 
-- **Local-directory loading:** OpenCode v2's directory resolver only probes
-  `<dir>/index` and `<dir>/tui` and ignores `package.json` `main`/`exports`;
-  root `index.js` / `tui.js` shims now re-export the built bundles.
-- **Immer frozen-object rejections:** transform callbacks are synchronous
-  and `Model.Info.default()` output is copied before mutation.
-- **Login-flow state clobber:** `runLoginFlow` wrote plugin state without
-  a target directory, overwriting the real state file from tests and
-  aborted logins (with `providerId: undefined`). `LoginConfig.stateDir` is
-  now threaded through, with regression tests pinning state isolation.
-- **Logout honesty:** the logout tool revokes the integration-sourced
-  refresh token and clears plugin state/cache, and reports that the stored
-  credential must be disconnected via OpenCode's native auth UI (no plugin
-  API deletes it).
+- **Carga desde directorios locales:** el resolver de directorios de
+  OpenCode v2 solo prueba `<dir>/index` y `<dir>/tui` e ignora
+  `package.json` `main`/`exports`; los shims raíz `index.js` / `tui.js`
+  ahora re-exportan los bundles compilados.
+- **Rechazos de objetos congelados de Immer:** los callbacks de transform
+  son síncronos y la salida de `Model.Info.default()` se copia antes de
+  mutarla.
+- **Sobrescritura de estado en el flujo de login:** `runLoginFlow` escribía
+  el estado del plugin sin un directorio destino, sobrescribiendo el archivo
+  de estado real desde tests y logins abortados (con
+  `providerId: undefined`). Ahora `LoginConfig.stateDir` se propaga a través
+  del flujo, con tests de regresión que fijan el aislamiento del estado.
+- **Logout honesto:** el tool de logout revoca el refresh token obtenido de
+  la integración y limpia el estado/caché del plugin, y reporta que la
+  credencial almacenada debe desconectarse vía la UI de auth nativa de
+  OpenCode (no existe una API de plugin para borrarla).
 
-### Migration notes
+### Notas de migración
 
-- After upgrading OpenCode to v2: rename `"plugin"` to `"plugins"` in
-  `opencode.json`, move the widget entry to `cli.json`, remove stale V1
-  packages from `cli.json`, restart the OpenCode server (`pkill -f
-  "opencode serve"`) so the cached location plugin set reloads, then run
-  `opencode auth login` and pick `actsis-litellm`.
-- Dependencies: `@opencode/plugin` ^2.0.4 (replaces `@opencode-ai/plugin`);
-  `@opentui/*` peers >= 0.5.10; `engines.opencode >= 2.0.0`.
+- Tras actualizar OpenCode a v2: renombra `"plugin"` a `"plugins"` en
+  `opencode.json`, mueve la entrada del widget a `cli.json`, elimina los
+  paquetes v1 obsoletos de `cli.json`, reinicia el servidor de OpenCode
+  (`pkill -f "opencode serve"`) para que el set de plugins en caché se
+  recargue, luego ejecuta `opencode auth login` y selecciona
+  `actsis-litellm`.
+- Dependencias: `@opencode/plugin` ^2.0.4 (reemplaza `@opencode-ai/plugin`);
+  peers `@opentui/*` >= 0.5.10; `engines.opencode >= 2.0.0`.
 
 ## Unreleased
 
-### Documentation
+### Documentación
 
-- **New installation guide** (`docs/installation.md`) — authoritative
-  step-by-step install reference: requirements (OpenCode >= 1.14.0, widget
-  verified on 1.18.32, no manual dependency installs for end users),
-  recommended GitHub spec install in **both** `opencode.json` (server
-  plugin) and `tui.json` (budget widget), npm/local-path alternatives with
-  the same dual-config rule, login walkthrough (conditional gateway URL
-  prompt, SSO with 5-minute callback window vs API key), post-install
-  verification checklist, troubleshooting table, and a packaging note
-  explaining why `dist/` is committed and the `main` -> `dist/tui.js`
-  TUI-loader contract.
-- **New architecture document** (`docs/architecture.md`) — module map of
-  `src/` with per-module responsibilities, OpenCode hook integration
-  (`config`, `auth`, `provider.models`, `event`, `tool`, `chat.headers`,
-  `chat.params`), credential/state/cache file layout, provider registration
-  and auth loader contract, packaging/TUI-loader details, and the budget
-  snapshot lifecycle.
-- **README** — replaced the Install section with a dual-config quick start
-  linking to the installation guide, added a prominent guide link near the
-  top, expanded the TUI widget section (committed `dist/` bundles, dual
-  config, source-build peer deps, `session.idle` snapshot lifecycle), and
-  added an Architecture section linking the technical docs.
-- **`docs/login-flow.md`** — fixed stale tool/command names to
-  `/actsis-litellm-logout` / `actsis_litellm_logout` and documented the
-  post-turn budget snapshot (`session.idle` persistence used by the status
-  and budget tools and the TUI widget).
+- **Nueva guía de instalación** (`docs/installation.md`) — referencia
+  autorizada de instalación paso a paso: requisitos (OpenCode >= 2.0.0,
+  widget verificado en 2.0.20, sin instalación manual de dependencias para
+  usuarios finales), instalación recomendada por spec de GitHub en **ambos**
+  `opencode.json` (plugin de servidor) y `cli.json` (widget de budget),
+  alternativas npm/ruta local con la misma regla de configuración dual,
+  walkthrough de login (prompt condicional de URL del gateway, SSO con
+  ventana de callback de 5 minutos vs API key), checklist de verificación
+  post-instalación, tabla de troubleshooting, y nota de packaging que
+  explica por qué `dist/` está commiteado y el contrato de shims raíz para
+  el resolver de directorios locales.
+- **Nuevo documento de arquitectura** (`docs/architecture.md`) — mapa de
+  módulos de `src/` con responsabilidades por módulo, integración con la API
+  v2 de OpenCode (transforms de provider/integration/tool/command, hooks de
+  sesión `model.request`/`context`/`http.response`, `event.subscribe` para
+  `session.idle`), layout de credenciales y archivos, contrato del
+  credential reader (`ctx.integration.connection.active` + `resolve`), shape
+  del registro del provider, detalles de packaging/loader de la TUI, y el
+  ciclo de vida del snapshot de budget.
+- **README** — reemplazó la sección de instalación por un inicio rápido de
+  configuración dual que enlaza a la guía de instalación, agregó un enlace
+  destacado a la guía cerca del inicio, amplió la sección del widget de la
+  TUI (bundles `dist/` commiteados, configuración dual, peers para compilar
+  desde el código fuente, ciclo de vida del snapshot en `session.idle`) y
+  agregó una sección de Arquitectura que enlaza los documentos técnicos.
+- **`docs/login-flow.md`** — reescrito para la API v2: el flujo de login
+  ahora documenta el método de integración OAuth `sso-browser` (callbacks
+  `authorize`/`refresh`) en lugar del hook `auth.loader` con
+  `client.auth.set` de v1, y las credenciales se persisten en el store
+  nativo de integraciones de OpenCode (`opencode.db`), no en `auth.json`.
 
-### Added
+### Agregado
 
-- **Tiered model pricing and paginated model-info fallback** — input/output
-  costs above 128k/200k/272k/512k context tokens from the gateway are mapped
-  to OpenCode's native `cost.tiers` (cache read/write rates shared across
-  tiers); when `GET /v1/model/info` fails or returns no entries, the plugin
-  falls back to `GET /v2/model/info` with pagination (`size=100`, up to 5
-  pages, merged by model name). Model cache schema bumped to version 2
-  (stale caches are re-synced).
-- **Budget status gauge** — `formatBudgetStatus` renders spend as an 8-cell
-  gauge (`▰` filled / `▱` empty) with percent and spend/cap, used by the
-  status and budget tools; `budgetGauge` is exported for reuse.
-- **`actsis_litellm_budget` diagnostic tool** — forces a budget refresh and
-  always reports the exact outcome: the gauge status line on success, or the
-  precise failure (no credential, gateway URL not configured, credential
-  rejected, network/timeout error) instead of a silent empty result
-  (mirrors pi-provider-litellm 0165eae).
-- **Post-turn budget refresh** — the plugin refreshes the stored budget
-  snapshot on `session.idle` (end of an agent turn, pi `agent_end` parity)
-  and persists it with a timestamp in plugin state; `actsis_litellm_status`
-  and `actsis_litellm_budget` report the last known line (with age) when a
-  live fetch fails.
-- **`/actsis-litellm-budget` slash command** — runs the
-  `actsis_litellm_budget` tool and summarizes the outcome from the prompt
-  bar (mirrors pi-provider-litellm's `actsis-litellm:budget` command).
-- **TUI budget widget (`./tui` entrypoint)** — optional OpenCode TUI slot
-  plugin (`src/tui.tsx`, id `actsis-litellm-budget`) rendering the budget
-  gauge in the sidebar footer from the persisted snapshot, refreshed on
-  `session.idle`; enable by listing the package in `tui.json`.
+- **Precios escalonados de modelos y fallback paginado de model-info** — los
+  costos de input/output por encima de 128k/200k/272k/512k tokens de
+  contexto que reporta el gateway se mapean a los `cost.tiers` nativos de
+  OpenCode (tasas de cache read/write compartidas entre tiers); cuando
+  `GET /v1/model/info` falla o no devuelve entradas, el plugin recurre a
+  `GET /v2/model/info` con paginación (`size=100`, hasta 5 páginas, fusionadas
+  por nombre de modelo). El esquema del caché de modelos se elevó a versión 2
+  (los cachés obsoletos se re-sincronizan).
+- **Gauge de estado de budget** — `formatBudgetStatus` renderiza el gasto
+  como un gauge de 8 celdas (`▰` lleno / `▱` vacío) con porcentaje y
+  gasto/límite, usado por los tools status y budget; `budgetGauge` se
+  exporta para su reutilización.
+- **Tool de diagnóstico `actsis_litellm_budget`** — fuerza una actualización
+  del budget y siempre reporta el resultado exacto: la línea de gauge en
+  éxito, o el fallo preciso (sin credencial, URL del gateway sin configurar,
+  credencial rechazada, error de red/timeout) en lugar de un resultado vacío
+  silencioso (-espejo de pi-provider-litellm 0165eae).
+- **Refresh de budget post-turno** — el plugin refresca el snapshot de
+  budget almacenado en `session.idle` (fin de un turno del agente, paridad
+  con pi `agent_end`) y lo persiste con marca de tiempo en el estado del
+  plugin; `actsis_litellm_status` y `actsis_litellm_budget` reportan la
+  última línea conocida (con antigüedad) cuando un fetch en vivo falla.
+- **Comando slash `/actsis-litellm-budget`** — ejecuta el tool
+  `actsis_litellm_budget` y resume el resultado desde la barra de prompt
+  (espejo del comando `actsis-litellm:budget` de pi-provider-litellm).
+- **Widget de budget para la TUI (entrypoint `./tui`)** — plugin opcional de
+  slot para la TUI de OpenCode (`src/tui.tsx`, id `actsis-litellm-budget`)
+  que renderiza el gauge de budget en el footer de la barra lateral a partir
+  del snapshot persistido, actualizado en `session.idle`; se activa listando
+  el paquete en el archivo de configuración de la CLI.
 
-### Changed
+### Cambiado
 
-- **Tools and commands renamed to the actsis-litellm namespace** —
+- **Tools y comandos renombrados al namespace actsis-litellm** —
   `litellm_status` -> `actsis_litellm_status`, `litellm_models` ->
   `actsis_litellm_models`, `litellm_logout` -> `actsis_litellm_logout`
-  (slash commands `/actsis-litellm-status`, `/actsis-litellm-models`,
-  `/actsis-litellm-logout`); provider display name "ACTSIS LiteLLM" ->
-  "Actsis LiteLLM" (mirrors pi-provider-litellm 052c9ca).
+  (comandos slash `/actsis-litellm-status`, `/actsis-litellm-models`,
+  `/actsis-litellm-logout`); nombre visible del proveedor "ACTSIS LiteLLM" ->
+  "Actsis LiteLLM" (espejo de pi-provider-litellm 052c9ca).
 
-- **Status surfaces budget failures** — `actsis_litellm_status` now reports
-  "Budget unavailable: <reason>" for gateway/network failures and a distinct
-  "Budget: Credential rejected — run /login again" line on auth rejection,
-  instead of a generic unavailable message (mirrors pi-provider-litellm
-  2296166).
+- **Status reporta los fallos de budget** — `actsis_litellm_status` ahora
+  reporta "Budget unavailable: <reason>" para fallos de gateway/red y una
+  línea distinta "Budget: Credential rejected — run /login again" ante un
+  rechazo de auth, en lugar de un mensaje genérico de indisponibilidad
+  (espejo de pi-provider-litellm 2296166).
 
-### Fixed
-- **Package entrypoints aligned with OpenCode's TUI loader** — `main` and
-  `exports["./tui"]` now point at the compiled `dist/tui.js` (the shape the
-  TUI loader resolves for npm/git packages), while `exports["./server"]`
-  keeps the server bundle. Public installs only need the package spec in
-  `opencode.json` (server) and `tui.json` (widget).
+### Corregido
 
-- **TUI plugin not loaded when the package is consumed from GitHub** — the
-  package now ships pre-built `dist/` bundles (`main` and `exports["./tui"]`
-  point at `dist/*.js`), matching the entrypoint resolution OpenCode's TUI
-  loader performs for npm/git packages; raw `src/*.tsx` entries were not
-  resolved.
-- **API key no longer requested twice during `opencode auth login`** — for the
-  API-key method, the plugin now relies on OpenCode's native "Enter your API
-  key" prompt and only declares the gateway URL prompt. The key is stored by
-  OpenCode in its credential store and validated by the gateway on first use
-  (the plugin no longer pre-validates it against `GET /v1/models` at login).
+- **Entry points del paquete alineados con el loader de la TUI de OpenCode**
+  — `main` y `exports["./tui"]` ahora apuntan al `dist/tui.js` compilado (la
+  forma que el loader de la TUI resuelve para paquetes npm/git), mientras
+  que `exports["./server"]` mantiene el bundle del servidor. Las
+  instalaciones públicas solo necesitan el spec del paquete en
+  `opencode.json` (servidor) y en el archivo de configuración de la CLI
+  (widget).
+
+- **El plugin de la TUI no se cargaba cuando el paquete se consumía desde
+  GitHub** — el paquete ahora incluye bundles `dist/` pre-compilados (`main`
+  y `exports["./tui"]` apuntan a `dist/*.js`), coincidiendo con la
+  resolución de entrypoints que el loader de la TUI de OpenCode realiza para
+  paquetes npm/git; las entradas crudas `src/*.tsx` no se resolvían.
+- **La API key ya no se solicita dos veces durante `opencode auth login`**
+  — para el método de API key, el plugin ahora depende del prompt nativo de
+  OpenCode "Enter your API key" y solo declara el prompt de la URL del
+  gateway. La clave la almacena OpenCode en su almacén de credenciales y la
+  valida el gateway en el primer uso (el plugin ya no la pre-valida contra
+  `GET /v1/models` durante el login).
 
 ## 0.1.0
 
-Initial release. OpenCode plugin that adds an ACTSIS LiteLLM gateway as a
-dynamic model provider, ported from the pi-provider-litellm extension.
+Lanzamiento inicial. Plugin de OpenCode que agrega un gateway ACTSIS LiteLLM
+como proveedor de modelos dinámico, portado desde la extensión
+pi-provider-litellm.
 
-### Added
+### Agregado
 
-- **Scaffold and package metadata** — `package.json` (`exports` pointing at
-  TypeScript source for the Bun runtime, `files` limited to `src/README/
-  LICENSE/CHANGELOG`, `engines.opencode >= 1.14.0`), `tsconfig.json`,
-  `vitest.config.ts`, MIT `LICENSE`, and repo hygiene (`.gitignore`).
-- **Config module** (`src/config.ts`, `src/gateway-url.ts`) — gateway URL
-  resolution with `env ACTSIS_LITELLM_URL > plugin options > stored state >
-  interactive prompt` precedence, base-URL normalization (trailing `/v1`
-  stripped), and stored-credential origin helpers.
-- **LiteLLM client** (`src/client.ts`) — discovery fetch with contract
-  validation (`contract_version: 1`, `S256`, same-origin, scheme-upgrade
-  adaptation), dynamic client registration, token exchange, refresh grant with
-  rotation, token revocation, `/v1/models` and `/model/info` fetches, and
-  budget info fetch — all with redirect-guard and per-request timeouts.
-- **OAuth2 PKCE login** (`src/pkce.ts`, `src/oauth.ts`) — PKCE S256 + random
-  state, loopback callback server on `127.0.0.1` (ephemeral port, 5-minute
-  window), SSO authorize flow returning an OpenCode-compatible OAuth result,
-  and an API-key method validated against `/v1/models` before storage.
-- **State and catalog cache** (`src/state.ts`, `src/catalog-cache.ts`) —
-  schema-versioned, atomically-written (tmp + rename) state file at
-  `~/.local/share/opencode/actsis-litellm/state.json` and models cache at
-  `~/.local/share/opencode/actsis-litellm/models-cache.json`.
-- **Catalog discovery and mapping** (`src/catalog.ts`) — `/v1/models` +
-  `/model/info` enrichment, chat-mode filter (metadata plus conservative name
-  heuristic excludes embedding/whisper/TTS/rerank/audio/moderation models),
-  and OpenCode `ModelV2` mapping with per-million cost fields and
-  128000/16384 context/output defaults.
-- **Plugin core** (`src/plugin.ts`, `src/index.ts`) — `config` hook injecting
-  the `@ai-sdk/openai-compatible` provider with catalog models and
-  `/litellm-*` command templates; `auth` hook with SSO + API-key login methods
-  and a loader providing `{ apiKey, baseURL, fetch }` with Bearer injection,
-  proactive refresh persisted via `client.auth.set`, and gateway error
-  classification; `provider.models` hook for live catalog refresh;
-  `chat.headers` (`X-Litellm-Session-ID`) and `chat.params` (`thinking`
-  normalization) hooks.
-- **Tools and auth-store** (`src/tools.ts`, `src/auth-store.ts`) —
-  `litellm_status`, `litellm_models`, `litellm_logout` tools (plus matching
-  `/litellm-status`, `/litellm-models`, `/litellm-logout` commands) and
-  helpers to read/clear credential entries in OpenCode's `auth.json`.
-- **Budget and limit/overflow normalization** (`src/budget.ts`,
-  `src/limit-errors.ts`, `src/overflow.ts`) — budget info fetch and formatting
-  (spend, max, reset time), 429 classification into budget-exceeded vs
-  throttling with actionable messages, and `context_length_exceeded`
-  prefixing so OpenCode compaction can react.
-- **Documentation** — public-safe `README.md` (install, login, configuration
-  precedence, auth methods, catalog, tools/commands, error hardening,
-  troubleshooting, security notes) and `docs/login-flow.md` with the full
-  OAuth2 PKCE sequence.
-- **Tests** — 13 vitest files, 160 tests covering config resolution, client
-  contract validation, PKCE/login flow, state and cache, catalog mapping and
-  filtering, plugin hooks, tools, auth-store, budget, and limit/overflow
-  classification (mocked `fetch`; no network in tests).
+- **Scaffold y metadatos del paquete** — `package.json` (`exports` apuntando
+  al código fuente TypeScript para el runtime Bun, `files` limitado a
+  `src/README/LICENSE/CHANGELOG`, `engines.opencode >= 1.14.0`),
+  `tsconfig.json`, `vitest.config.ts`, `LICENSE` MIT e higiene del
+  repositorio (`.gitignore`).
+- **Módulo de configuración** (`src/config.ts`, `src/gateway-url.ts`) —
+  resolución de la URL del gateway con precedencia
+  `env ACTSIS_LITELLM_URL > opciones del plugin > estado almacenado > prompt
+  interactivo`, normalización de la URL base (se elimina una `/v1` final) y
+  helpers sobre el origen de credenciales almacenadas.
+- **Cliente LiteLLM** (`src/client.ts`) — fetch de discovery con validación
+  del contrato (`contract_version: 1`, `S256`, mismo origen, adaptación de
+  promoción de esquema), registro dinámico de cliente, intercambio de
+  tokens, refresh grant con rotación, revocación de tokens, fetches de
+  `/v1/models` y `/model/info` y fetch de información de budget — todo con
+  guarda de redirects y timeouts por petición.
+- **Login OAuth2 PKCE** (`src/pkce.ts`, `src/oauth.ts`) — PKCE S256 +
+  `state` aleatorio, servidor callback loopback en `127.0.0.1` (puerto
+  efímero, ventana de 5 minutos), flujo SSO authorize que devuelve un
+  resultado OAuth compatible con OpenCode, y un método de API key validado
+  contra `/v1/models` antes de almacenarse.
+- **Estado y caché del catálogo** (`src/state.ts`, `src/catalog-cache.ts`) —
+  archivo de estado con versión de esquema y escritura atómica (tmp +
+  rename) en `~/.local/share/opencode/actsis-litellm/state.json` y caché de
+  modelos en `~/.local/share/opencode/actsis-litellm/models-cache.json`.
+- **Descubrimiento y mapeo del catálogo** (`src/catalog.ts`) — `/v1/models` +
+  enriquecimiento con `/model/info`, filtro de modo chat (metadata más una
+  heurística conservadora por nombre que excluye modelos de
+  embedding/whisper/TTS/rerank/audio/moderación) y mapeo a `ModelV2` de
+  OpenCode con campos de costo por millón y defaults 128000/16384 de
+  contexto/salida.
+- **Núcleo del plugin** (`src/plugin.ts`, `src/index.ts`) — hook `config` que
+  inyecta el proveedor `@ai-sdk/openai-compatible` con los modelos del
+  catálogo y plantillas de comandos `/litellm-*`; hook `auth` con métodos de
+  login SSO + API key y un loader que provee `{ apiKey, baseURL, fetch }` con
+  inyección Bearer, refresh proactivo persistido vía `client.auth.set` y
+  clasificación de errores del gateway; hook `provider.models` para refresh
+  del catálogo en vivo; hooks `chat.headers` (`X-Litellm-Session-ID`) y
+  `chat.params` (normalización de `thinking`).
+- **Tools y auth-store** (`src/tools.ts`, `src/auth-store.ts`) — tools
+  `litellm_status`, `litellm_models`, `litellm_logout` (más los comandos
+  correspondientes `/litellm-status`, `/litellm-models`, `/litellm-logout`) y
+  helpers para leer/limpiar entradas de credenciales en el `auth.json` de
+  OpenCode.
+- **Budget y normalización de límites/overflow** (`src/budget.ts`,
+  `src/limit-errors.ts`, `src/overflow.ts`) — fetch y formateo de
+  información de budget (gasto, máximo, hora de reset), clasificación de 429
+  en budget-exceeded vs throttling con mensajes accionables, y prefijo
+  `context_length_exceeded` para que la compactación de OpenCode pueda
+  reaccionar.
+- **Documentación** — `README.md` seguro para uso público (instalación,
+  login, precedencia de configuración, métodos de auth, catálogo,
+  tools/comandos, hardening de errores, troubleshooting, notas de seguridad)
+  y `docs/login-flow.md` con la secuencia completa de OAuth2 PKCE.
+- **Tests** — 13 archivos vitest, 160 tests que cubren resolución de
+  configuración, validación del contrato del cliente, flujo PKCE/login,
+  estado y caché, mapeo y filtrado del catálogo, hooks del plugin, tools,
+  auth-store, budget y clasificación de límites/overflow (`fetch`
+  mockeado; sin red en los tests).
 
-### Notes
+### Notas
 
-- Public-safe distribution: only `https://your-gateway.example.com`
-  placeholders; no internal hosts, IPs, tokens, or usernames in committed
-  files.
+- Distribución segura para uso público: solo placeholders
+  `https://your-gateway.example.com`; sin hosts internos, IPs, tokens ni
+  usernames en los archivos commiteados.
