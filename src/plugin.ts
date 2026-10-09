@@ -233,6 +233,12 @@ export function buildCommandDefinitions(existing?: Array<{ name: string }>): Com
       template: "Use the actsis_litellm_budget tool, then summarize its result for the user.",
     },
     {
+      name: "actsis-litellm-usage",
+      description: "Show per-model usage (spend/tokens/requests); args: [days] or 'YYYY-MM-DD .. YYYY-MM-DD'",
+      template:
+        "Use the actsis_litellm_usage tool, passing any window argument the user gave (a day count like 14, or a range like 2025-03-01 .. 2025-03-31) as its args input; omit args for the default last 30 days. Then summarize its result for the user.",
+    },
+    {
       name: "actsis-litellm-logout",
       description: "Revoke LiteLLM credentials and clear local state.",
       template: "Use the actsis_litellm_logout tool, then summarize its result for the user.",
@@ -639,7 +645,7 @@ export interface SetupContext {
 /**
  * Server plugin (v2): registers the ACTSIS LiteLLM gateway provider, its
  * dynamic model catalog, the OAuth + API-key auth methods on the linked
- * integration, the four slash commands, the four tools, the session hooks
+ * integration, the five slash commands, the five tools, the session hooks
  * (headers / thinking normalization / informational error classification),
  * and the session.idle budget refresh loop.
  */
