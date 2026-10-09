@@ -383,7 +383,7 @@ async function resolveGatewayUrlForAuth(
 }
 
 /**
- * Register the two auth methods for the integration: OAuth SSO (browser)
+ * Register the two auth methods for the integration: OAuth (browser)
  * and the native API key flow. In v2, OpenCode manages credential storage;
  * we only supply discovery, login flow, and token refresh.
  */
@@ -403,7 +403,7 @@ export function buildOAuthMethodRegistration(closure: PluginClosure) {
 }
 
 /**
- * Register the two auth methods for the integration: OAuth SSO (browser)
+ * Register the two auth methods for the integration: OAuth (browser)
  * and the native API key flow. In v2, OpenCode manages credential storage;
  * we only supply discovery, login flow, and token refresh.
  */
@@ -432,7 +432,7 @@ export function buildAuthMethodRegistrations(closure: PluginClosure) {
     method: {
       id: OAUTH_METHOD_ID,
       type: "oauth",
-      label: "Sign in with SSO (browser)",
+      label: "Sign in with OAuth (browser)",
       form: [gatewayUrlField()],
     },
     async authorize(answer) {

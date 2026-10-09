@@ -474,7 +474,7 @@ describe("OAuth method registration", () => {
 
     const method = registration.method as Record<string, unknown>;
     expect(method.type).toBe("oauth");
-    expect(method.label).toBe("Sign in with SSO (browser)");
+    expect(method.label).toBe("Sign in with OAuth (browser)");
     const form = method.form as Array<Record<string, unknown>>;
     expect(form[0].key).toBe("gatewayUrl");
   });
