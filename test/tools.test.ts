@@ -19,13 +19,14 @@ function makeToolContext(): ToolContext {
 }
 
 describe("buildLitellmToolInfos", () => {
-  it("exposes the five litellm tools in v2 shape", () => {
+  it("exposes the six litellm tools in v2 shape", () => {
     const infos = buildLitellmToolInfos({ providerId: "actsis-litellm" });
     expect(infos.map((t) => t.name)).toEqual([
       "actsis_litellm_status",
       "actsis_litellm_budget",
       "actsis_litellm_models",
       "actsis_litellm_usage",
+      "actsis_litellm_top",
       "actsis_litellm_logout",
     ]);
 

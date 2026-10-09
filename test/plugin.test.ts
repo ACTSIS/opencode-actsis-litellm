@@ -322,20 +322,22 @@ describe("mapModelConfigToInfo", () => {
 });
 
 describe("buildCommandDefinitions", () => {
-  it("exposes all five commands in v2 shape (name/description/template)", () => {
+  it("exposes all six commands in v2 shape (name/description/template)", () => {
     const commands = buildCommandDefinitions();
     expect(commands.map((c) => c.name)).toEqual([
       "actsis-litellm-status",
       "actsis-litellm-models",
       "actsis-litellm-budget",
       "actsis-litellm-usage",
+      "actsis-litellm-top",
       "actsis-litellm-logout",
     ]);
     expect(commands[0].template).toContain("actsis_litellm_status tool");
     expect(commands[1].description).toContain("Force-sync");
     expect(commands[2].template).toContain("actsis_litellm_budget tool");
     expect(commands[3].template).toContain("actsis_litellm_usage tool");
-    expect(commands[4].description).toContain("Revoke");
+    expect(commands[4].template).toContain("actsis_litellm_top tool");
+    expect(commands[5].description).toContain("Revoke");
   });
 });
 
@@ -779,6 +781,7 @@ describe("server plugin (v2 wiring)", () => {
       "actsis_litellm_budget",
       "actsis_litellm_models",
       "actsis_litellm_usage",
+      "actsis_litellm_top",
       "actsis_litellm_logout",
     ]) {
       expect(toolNames).toContain(name);
@@ -789,6 +792,7 @@ describe("server plugin (v2 wiring)", () => {
       "actsis-litellm-models",
       "actsis-litellm-budget",
       "actsis-litellm-usage",
+      "actsis-litellm-top",
       "actsis-litellm-logout",
     ]);
 
@@ -943,6 +947,7 @@ describe("triangulation: alternate v2 wiring cases", () => {
       "actsis-litellm-models",
       "actsis-litellm-budget",
       "actsis-litellm-usage",
+      "actsis-litellm-top",
       "actsis-litellm-logout",
     ]);
   });

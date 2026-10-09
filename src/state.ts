@@ -9,6 +9,12 @@ const DEFAULT_APP_DIR_NAME = "opencode";
 const DEFAULT_PLUGIN_DIR_NAME = "actsis-litellm";
 const STATE_FILE_NAME = "state.json";
 
+/** One top-model spend row persisted for the TUI top-5 widget. */
+export interface TopModelRow {
+  model: string;
+  spend: number;
+}
+
 export interface PluginState {
   version: number;
   gatewayUrl?: string;
@@ -21,6 +27,11 @@ export interface PluginState {
   schemeUpgraded?: boolean;
   lastBudgetSnapshot?: GatewayBudgetSnapshot;
   budgetRefreshedAt?: number;
+  /** Top-5 spend rows for the TUI widget (public-aliased, spend desc). */
+  lastTopModels?: TopModelRow[];
+  topRefreshedAt?: number;
+  topWindowLabel?: string;
+  topTotalSpend?: number;
   savedAt?: number;
 }
 

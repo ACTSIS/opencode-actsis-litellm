@@ -15,6 +15,15 @@ import {
   formatUsageTable,
   mapModelAliases,
 } from "./usage.ts";
+import { resolveUsageRangeDays } from "./usage.ts";
+import { parseTopPrefArg, formatTopToggleAnswer } from "./top-command.ts";
+import { readTopModelsWidgetEnabled, updateTopModelsWidgetEnabled } from "./preferences.ts";
+import {
+  TOP_MODELS_ROW_LIMIT,
+  TOP_MODELS_WINDOW_DAYS,
+  TOP_WIDGET_WINDOW_LABEL,
+  computeTopModelRows,
+} from "./top-widget.ts";
 import { parseUsageRangeArg } from "./usage-command.ts";
 import { readAuthEntry, clearAuthEntry, defaultAuthPath, type AuthJsonEntry } from "./auth-store.ts";
 import { revokeToken, type CliAuthDiscovery } from "./client.ts";
@@ -105,6 +114,18 @@ const USAGE_INPUT = {
       type: "string" as const,
       description:
         "Optional usage window: a day count like 14, or a range like '2025-03-01 .. 2025-03-31'. Omit for the last 30 days.",
+    },
+  },
+  additionalProperties: false as const,
+};
+
+const TOP_INPUT = {
+  type: "object" as const,
+  properties: {
+    args: {
+      type: "string" as const,
+      description:
+        "Optional action: 'on', 'off', or 'toggle'. Omit to toggle the current state.",
     },
   },
   additionalProperties: false as const,
@@ -451,6 +472,93 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     }
   };
 
+  /**
+   * Toggle the Top-5 spend widget: persists the on/off preference (plugin-owned
+   * preferences.json) and immediately clears or refetches the persisted rows
+   * so the TUI widget and its gateway behavior reflect the change right away.
+   */
+  const top = async (args?: string): Promise<string> => {
+    const enabled = await readTopModelsWidgetEnabled(stateDir);
+    const parsed = parseTopPrefArg(args, enabled);
+    if ("error" in parsed) {
+      return `Invalid argument: ${parsed.error} — pass on, off, toggle, or omit args to toggle. Top-5 widget state unchanged.`;
+    }
+    if (parsed.changed) {
+      await updateTopModelsWidgetEnabled(parsed.state === "on", stateDir);
+    }
+
+    if (parsed.state === "off") {
+      // Disabled: clear the persisted rows and stop gateway queries.
+      const state = await readPluginState(stateDir);
+      if (state?.lastTopModels?.length) {
+        await updatePluginState(
+          { lastTopModels: [], topRefreshedAt: undefined },
+          stateDir,
+        );
+      }
+      return `${formatTopToggleAnswer(parsed)}. Widget rows cleared; gateway queries stopped.`;
+    }
+
+    // Enabled (new or already): refresh rows right away (force, like pi's
+    // command wrapper). The refresh is best-effort: a gateway failure still
+    // reports the toggle outcome.
+    const state = await readPluginState(stateDir);
+    const entry = await readEntry(deps);
+    if (!state?.gatewayUrl || !entry) {
+      return `${formatTopToggleAnswer(parsed)}. Widget rows unavailable: no gateway URL or credentials.`;
+    }
+    try {
+      const token = entry.type === "oauth"
+        ? await ensureFreshToken(
+          { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+          {
+            state,
+            timeoutMs: timeout,
+            fetchImpl,
+            onRefreshed,
+          },
+        )
+        : entry.key;
+      const userId = extractCredentialUserId(await credentialMetadata()) ?? undefined;
+      const summary = await fetchModelUsage(
+        state.gatewayUrl,
+        token,
+        timeout,
+        resolveUsageRangeDays(TOP_MODELS_WINDOW_DAYS),
+        { userId },
+        fetchImpl,
+      );
+      if (summary.models.length === 0 || (summary.totals.spend ?? 0) <= 0) {
+        await updatePluginState(
+          { lastTopModels: [], topRefreshedAt: undefined },
+          stateDir,
+        );
+        return `${formatTopToggleAnswer(parsed)}. No logged spend in the last ${TOP_MODELS_WINDOW_DAYS} days to show.`;
+      }
+      const cached = await loadCachedModels(stateDir);
+      const { rows, totalSpend } = computeTopModelRows(
+        summary,
+        cached ? Object.keys(cached) : [],
+      );
+      await updatePluginState(
+        {
+          lastTopModels: rows.slice(0, TOP_MODELS_ROW_LIMIT),
+          topRefreshedAt: Date.now(),
+          topWindowLabel: TOP_WIDGET_WINDOW_LABEL,
+          topTotalSpend: totalSpend,
+        },
+        stateDir,
+      );
+      return `${formatTopToggleAnswer(parsed)}. Top-5 rows refreshed (last ${TOP_MODELS_WINDOW_DAYS} days).`;
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return `${formatTopToggleAnswer(parsed)}. Widget rows unavailable: ${err.message}`;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      return `${formatTopToggleAnswer(parsed)}. Widget rows unavailable: ${reason}`;
+    }
+  };
+
   const logout = async (): Promise<string> => {
     const state = await readPluginState(stateDir);
     const entry = await readEntry(deps);
@@ -519,6 +627,16 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
       async execute(input) {
         const args = typeof input.args === "string" ? input.args : undefined;
         return { content: await usage(args) };
+      },
+    },
+    {
+      name: "actsis_litellm_top",
+      description:
+        "Enable, disable, or toggle the Top-5 spend models TUI widget; persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows.",
+      input: TOP_INPUT,
+      async execute(input) {
+        const args = typeof input.args === "string" ? input.args : undefined;
+        return { content: await top(args) };
       },
     },
     {

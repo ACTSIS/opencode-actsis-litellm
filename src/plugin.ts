@@ -21,6 +21,20 @@ import { normalizeBaseUrl, type PluginOptions } from "./config.ts";
 import { ConfigError } from "./errors.ts";
 import { ensureFreshToken } from "./gateway-client.ts";
 import { fetchGatewayBudget } from "./budget.ts";
+import { readTopModelsWidgetEnabled } from "./preferences.ts";
+import {
+  TOP_MODELS_ROW_LIMIT,
+  TOP_MODELS_TTL_MS,
+  TOP_MODELS_WINDOW_DAYS,
+  TOP_WIDGET_WINDOW_LABEL,
+} from "./top-widget.ts";
+import {
+  applyModelAliases,
+  extractCredentialUserId,
+  fetchModelUsage,
+  mapModelAliases,
+  resolveUsageRangeDays,
+} from "./usage.ts";
 import { buildLitellmToolInfos, type ToolDeps } from "./tools.ts";
 
 const DEFAULT_PROVIDER_ID = "actsis-litellm";
@@ -237,6 +251,12 @@ export function buildCommandDefinitions(existing?: Array<{ name: string }>): Com
       description: "Show per-model usage (spend/tokens/requests); args: [days] or 'YYYY-MM-DD .. YYYY-MM-DD'",
       template:
         "Use the actsis_litellm_usage tool, passing any window argument the user gave (a day count like 14, or a range like 2025-03-01 .. 2025-03-31) as its args input; omit args for the default last 30 days. Then summarize its result for the user.",
+    },
+    {
+      name: "actsis-litellm-top",
+      description: "Enable, disable or toggle the Top-5 spend widget (args: on | off | toggle; omit to toggle).",
+      template:
+        "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then summarize its result for the user.",
     },
     {
       name: "actsis-litellm-logout",
@@ -510,6 +530,114 @@ export async function runBudgetRefresh(
   } catch {
     // Background refresh: failures are silent; tools force a fresh fetch.
   }
+
+  // The top-5 widget rides the same trigger (session.idle) and the same
+  // credential/token path; failures are silent and stay contained.
+  try {
+    await runTopModelsRefresh(closure, getCredential);
+  } catch {
+    // Background refresh: failures are silent.
+  }
+}
+
+/**
+ * Refresh, persist or clear the top-5 spend rows persisted for the TUI
+ * widget, honoring the `top` preference and a 5-minute TTL:
+ *
+ * - preference off: clears any persisted rows, never touches the gateway.
+ * - preference on + stale/absent data: fetches the last 7 days of model
+ *   usage (user-scoped via the credential's own user id), aliases the rows
+ *   to public catalog ids, and persists the top 5 by spend.
+ *
+ * Silent by design: it runs inside the session.idle background loop, and the
+ * widget block is informative only.
+ */
+export async function runTopModelsRefresh(
+  closure: PluginClosure,
+  getCredential?: () => Promise<CredentialValue | null>,
+): Promise<void> {
+  const enabled = await readTopModelsWidgetEnabled(closure.stateDir);
+  if (!enabled) {
+    const state = await readPluginState(closure.stateDir);
+    if (state?.lastTopModels?.length) {
+      await updatePluginState(
+        { lastTopModels: [], topRefreshedAt: undefined },
+        closure.stateDir,
+      );
+    }
+    return; // user disabled the widget: no fetch, no rows
+  }
+
+  const state = await readPluginState(closure.stateDir);
+  if (!state?.gatewayUrl) return;
+  const entry = await credentialEntry(closure, getCredential);
+  if (!entry) return;
+
+  const now = Date.now();
+  if (
+    typeof state.topRefreshedAt === "number" &&
+    Number.isFinite(state.topRefreshedAt) &&
+    now - state.topRefreshedAt < TOP_MODELS_TTL_MS
+  ) {
+    return; // cached rows still fresh
+  }
+
+  const token = entry.type === "oauth"
+    ? await ensureFreshToken(
+      { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+      {
+        state,
+        timeoutMs: closure.requestTimeoutMs,
+      },
+    )
+    : entry.key;
+
+  // The v1 auth.json fallback carries no metadata, so the query is only
+  // user-scoped when the credential carries its own user id.
+  let userId: string | undefined;
+  if (getCredential) {
+    try {
+      userId = extractCredentialUserId(await getCredential()) ?? undefined;
+    } catch {
+      userId = undefined;
+    }
+  }
+
+  const summary = await fetchModelUsage(
+    state.gatewayUrl,
+    token,
+    closure.requestTimeoutMs,
+    resolveUsageRangeDays(TOP_MODELS_WINDOW_DAYS, now),
+    { userId },
+  );
+  if (summary.models.length === 0 || (summary.totals.spend ?? 0) <= 0) {
+    await updatePluginState(
+      { lastTopModels: [], topRefreshedAt: undefined },
+      closure.stateDir,
+    );
+    return;
+  }
+
+  const cached = await loadCachedModels(closure.stateDir);
+  const publicIds = cached ? Object.keys(cached) : [];
+  const aliased = applyModelAliases(
+    summary,
+    mapModelAliases(
+      summary.models.map((m) => m.model),
+      publicIds,
+    ),
+  );
+  await updatePluginState(
+    {
+      lastTopModels: aliased.models
+        .slice(0, TOP_MODELS_ROW_LIMIT)
+        .map((m) => ({ model: m.model, spend: m.spend ?? 0 })),
+      topRefreshedAt: now,
+      topWindowLabel: TOP_WIDGET_WINDOW_LABEL,
+      topTotalSpend: aliased.totals.spend ?? 0,
+    },
+    closure.stateDir,
+  );
 }
 
 /**

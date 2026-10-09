@@ -8,6 +8,12 @@ import {
   readBudgetWidgetData,
   type BudgetWidgetData,
 } from "./budget-widget.ts";
+import {
+  readTopWidgetData,
+  topWidgetLines,
+  type TopWidgetData,
+} from "./top-widget.ts";
+import { readTopModelsWidgetEnabled } from "./preferences.ts";
 
 const IDLE_REFRESH_DEBOUNCE_MS = 2000;
 
@@ -15,13 +21,21 @@ export default Plugin.define({
   id: "actsis-litellm-budget",
   async setup(context: Context) {
     let data: BudgetWidgetData | null = null;
+    let top: TopWidgetData | null = null;
     try {
       data = await readBudgetWidgetData();
+      if (await readTopModelsWidgetEnabled()) {
+        top = await readTopWidgetData();
+      }
     } catch {
       data = null;
+      top = null;
     }
     const [line, setLine] = createSignal<string | null>(
       data ? budgetWidgetLine(data, Date.now()) : null,
+    );
+    const [topLines, setTopLines] = createSignal<string[] | null>(
+      top ? topWidgetLines(top, Date.now()) : null,
     );
 
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -30,17 +44,27 @@ export default Plugin.define({
       try {
         const next = await readBudgetWidgetData();
         setLine(next ? budgetWidgetLine(next, Date.now()) : null);
+        // The server plugin persists (or clears) the top-5 rows on the same
+        // session.idle trigger; show them only when the preference is on.
+        const topData = await readTopWidgetData();
+        setTopLines(
+          (await readTopModelsWidgetEnabled()) && topData
+            ? topWidgetLines(topData, Date.now())
+            : null,
+        );
       } catch {
         setLine(null);
+        setTopLines(null);
       }
     };
 
     context.ui.slot({
       append: "sidebar.footer",
       render: (_input: { sessionID: string } & Record<string, never>) => {
-        return line() ? (
+        return line() || topLines() ? (
           <box>
             <text>{line()}</text>
+            {topLines() && <text>{topLines()!.join("\n")}</text>}
           </box>
         ) : null;
       },
