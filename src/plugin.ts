@@ -19,6 +19,7 @@ import { readAuthEntry, defaultAuthPath, type AuthJsonEntry } from "./auth-store
 import type { StructuralCredential } from "./tools.ts";
 import { normalizeBaseUrl, type PluginOptions } from "./config.ts";
 import { ConfigError } from "./errors.ts";
+import { configureSystemCa } from "./tls-config.ts";
 import { ensureFreshToken } from "./gateway-client.ts";
 import { fetchGatewayBudget } from "./budget.ts";
 import { readTopModelsWidgetEnabled } from "./preferences.ts";
@@ -44,6 +45,32 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_PROVIDER_NAME = "Actsis LiteLLM";
 const OPENAI_COMPATIBLE_PACKAGE = "@opencode/ai/providers/openai-compatible";
 
+/** Stable idempotency key for the process-wide TLS system-CA merge. */
+const TLS_BOOTSTRAP_ONCE_KEY = "actsis-litellm-plugin";
+
+/**
+ * TLS bootstrap FIRST in setup: private-CA gateways must be reachable before
+ * any catalog refresh, login discovery, or chat request fires. Strictly
+ * additive over Node's bundled CAs (public HTTPS keeps working), once per
+ * session, fail-open (never blocks or throws), and opt-out-able via
+ * ACTSIS_LITELLM_NO_SYSTEM_CA=1. Mirrors the pi extension's startup ordering.
+ */
+export async function runTlsBootstrapOnce(): Promise<void> {
+  try {
+    const outcome = await configureSystemCa({
+      onceKey: TLS_BOOTSTRAP_ONCE_KEY,
+      optOutEnv: process.env.ACTSIS_LITELLM_NO_SYSTEM_CA,
+    });
+    if (outcome.kind === "failed" && outcome.reason) {
+      console.warn(
+        `[actsis-litellm] TLS system-CA bootstrap skipped: ${outcome.reason}`,
+      );
+    }
+  } catch {
+    // Unreachable today (configureSystemCa never rejects); kept so startup
+    // can never depend on TLS.
+  }
+}
 export interface PluginClosure {
   baseUrl: string | null;
   providerId: string;
@@ -787,6 +814,9 @@ export default Plugin.define({
       resolveStateDir(),
     );
     const getCredential = makeCredentialReader(context, closure.providerId);
+
+    // --- TLS bootstrap (must precede any gateway fetch) ---
+    await runTlsBootstrapOnce();
 
     // --- Integration auth methods (must exist before the provider binds) ---
     await context.integration.transform((editor) => {
