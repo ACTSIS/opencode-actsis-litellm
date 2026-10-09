@@ -1,4 +1,5 @@
 import { AuthError, CatalogError } from "./errors.ts";
+import { fetchFailureMessage } from "./network-error.ts";
 
 /**
  * Per-model usage data layer, ported from the sibling pi extension's
@@ -195,7 +196,7 @@ async function requestUsagePage(
     });
   } catch (err) {
     throw new CatalogError(
-      `Failed to fetch model usage: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to fetch model usage: ${fetchFailureMessage(err)}`,
       { cause: err },
     );
   }
@@ -420,7 +421,7 @@ export async function fetchGatewayRequests(
     });
   } catch (err) {
     throw new CatalogError(
-      `Failed to fetch gateway activity: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to fetch gateway activity: ${fetchFailureMessage(err)}`,
       { cause: err },
     );
   }

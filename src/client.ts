@@ -1,4 +1,5 @@
-import { DiscoveryError, AuthError, CatalogError } from "./errors.ts";
+import { DiscoveryError, AuthError, CatalogError, ActsisLiteLLMError } from "./errors.ts";
+import { fetchFailureMessage } from "./network-error.ts";
 
 /**
  * LiteLLM native CLI OAuth discovery document.
@@ -226,6 +227,59 @@ function discoveryUrl(baseUrl: string): string {
   return `${normalized}/.well-known/litellm-cli-auth`;
 }
 
+/**
+ * Wraps a bare fetch so a network-level failure (opaque `TypeError: fetch
+ * failed`) is reported as the plugin's own error class with its underlying
+ * cause instead of escaping as an anonymous TypeError. Diagnostics only: the
+ * init object is passed through untouched and response handling is left to
+ * the caller.
+ */
+async function fetchOrThrow(
+  url: string,
+  init: RequestInit,
+  makeError: (message: string, cause: unknown) => ActsisLiteLLMError,
+  label: string,
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  try {
+    return await fetchImpl(url, init);
+  } catch (err) {
+    throw makeError(`${label}: ${fetchFailureMessage(err)}`, err);
+  }
+}
+
+function authFetchOrThrow(
+  url: string,
+  init: RequestInit,
+  label: string,
+  timeoutMs: number,
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  return fetchOrThrow(
+    url,
+    { signal: AbortSignal.timeout(timeoutMs), ...init },
+    (message, cause) => new AuthError(message, { cause }),
+    label,
+    fetchImpl,
+  );
+}
+
+function catalogFetchOrThrow(
+  url: string,
+  init: RequestInit,
+  label: string,
+  timeoutMs: number,
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  return fetchOrThrow(
+    url,
+    { signal: AbortSignal.timeout(timeoutMs), ...init },
+    (message, cause) => new CatalogError(message, { cause }),
+    label,
+    fetchImpl,
+  );
+}
+
 export async function fetchCliAuthDiscovery(
   baseUrl: string,
   timeoutMs: number,
@@ -239,7 +293,7 @@ export async function fetchCliAuthDiscovery(
     });
   } catch (err) {
     throw new DiscoveryError(
-      `Failed to fetch CLI auth discovery: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to fetch CLI auth discovery: ${fetchFailureMessage(err)}`,
       { cause: err },
     );
   }
@@ -288,19 +342,24 @@ export async function registerClient(
   timeoutMs: number,
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<RegisteredClient> {
-  const response = await fetchImpl(discovery.registrationEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_name: "opencode-actsis-litellm",
-      redirect_uris: [redirectUri],
-      token_endpoint_auth_method: "none",
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"],
-    }),
-    redirect: "manual",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  const response = await authFetchOrThrow(
+    discovery.registrationEndpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_name: "opencode-actsis-litellm",
+        redirect_uris: [redirectUri],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"],
+      }),
+      redirect: "manual",
+    },
+    "Client registration request failed",
+    timeoutMs,
+    fetchImpl,
+  );
 
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? "unknown";
@@ -379,13 +438,18 @@ export async function exchangeAuthorizationCode(
   params.set("code_verifier", input.codeVerifier);
   params.set("resource", discovery.resource);
 
-  const response = await fetchImpl(discovery.tokenEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-    redirect: "manual",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  const response = await authFetchOrThrow(
+    discovery.tokenEndpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+      redirect: "manual",
+    },
+    "Token endpoint request failed",
+    timeoutMs,
+    fetchImpl,
+  );
 
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? "unknown";
@@ -455,13 +519,18 @@ export async function refreshGrant(
   params.set("client_id", input.clientId);
   params.set("resource", discovery.resource);
 
-  const response = await fetchImpl(discovery.tokenEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-    redirect: "manual",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  const response = await authFetchOrThrow(
+    discovery.tokenEndpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+      redirect: "manual",
+    },
+    "Token refresh request failed",
+    timeoutMs,
+    fetchImpl,
+  );
 
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? "unknown";
@@ -537,13 +606,18 @@ export async function revokeToken(
   params.set("token", input.token);
   params.set("client_id", input.clientId);
 
-  const response = await fetchImpl(discovery.revocationEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-    redirect: "manual",
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  const response = await authFetchOrThrow(
+    discovery.revocationEndpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+      redirect: "manual",
+    },
+    "Token revocation request failed",
+    timeoutMs,
+    fetchImpl,
+  );
 
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? "unknown";
@@ -579,12 +653,17 @@ export async function fetchModels(
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<ModelsResponse> {
   const normalized = baseUrl.replace(/\/+$/, "");
-  const response = await fetchImpl(`${normalized}/v1/models?include_metadata=true`, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
+  const response = await catalogFetchOrThrow(
+    `${normalized}/v1/models?include_metadata=true`,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
     },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+    "Failed to fetch models",
+    timeoutMs,
+    fetchImpl,
+  );
 
   if (response.status === 401 || response.status === 403) {
     throw new AuthError(
@@ -623,12 +702,17 @@ export async function fetchModelInfoV2(
   const params = new URLSearchParams();
   params.set("size", String(size));
   params.set("page", String(page));
-  const response = await fetchImpl(`${normalized}/v2/model/info?${params.toString()}`, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
+  const response = await catalogFetchOrThrow(
+    `${normalized}/v2/model/info?${params.toString()}`,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
     },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+    `Failed to fetch model info (v2 page ${page})`,
+    timeoutMs,
+    fetchImpl,
+  );
 
   if (response.status === 401 || response.status === 403) {
     throw new AuthError(
@@ -662,12 +746,17 @@ export async function fetchModelInfo(
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<ModelsResponse> {
   const normalized = baseUrl.replace(/\/+$/, "");
-  const response = await fetchImpl(`${normalized}/v1/model/info`, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
+  const response = await catalogFetchOrThrow(
+    `${normalized}/v1/model/info`,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+      },
     },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+    "Failed to fetch model info",
+    timeoutMs,
+    fetchImpl,
+  );
 
   if (response.status === 401 || response.status === 403) {
     throw new AuthError(
