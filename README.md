@@ -2,7 +2,8 @@
 
 Plugin de [OpenCode](https://opencode.ai) que agrega un gateway **Actsis
 LiteLLM** como proveedor de modelos dinámico, con inicio de sesión OAuth2 PKCE
-(SSO), autenticación opcional por API key y un catálogo de modelos dinámico.
+(vía OAuth (browser)), autenticación opcional por API key y un catálogo de
+modelos dinámico.
 
 El plugin se integra al flujo nativo `/login` de OpenCode v2, descubre el
 catálogo de modelos del gateway en tiempo de ejecución y enruta las
@@ -53,7 +54,7 @@ opencode auth login
    antelación). Así el plugin funciona sin configuración previa: a los
    usuarios nuevos simplemente se les pregunta.
 3. Elige el método de inicio de sesión:
-   - **SSO (browser)** — flujo OAuth2 Authorization Code con PKCE (S256). Se
+   - **OAuth (browser)** — flujo OAuth2 Authorization Code con PKCE (S256). Se
      abre tu navegador, inicias sesión a través de tu proveedor de identidad
      y el gateway redirige a un callback local loopback.
    - **API key** — el propio OpenCode solicita la clave ("Enter your API
@@ -108,7 +109,7 @@ clave de configuración `plugins` (array):
 
 | Método | Cómo funciona |
 |--------|---------------|
-| **SSO (browser)** | OAuth2 Authorization Code + PKCE (S256). El plugin obtiene los metadatos de discovery en `/.well-known/litellm-cli-auth`, registra el cliente de forma dinámica, abre el navegador y captura la redirección en un servidor callback exclusivamente loopback (`127.0.0.1`, puerto efímero). La ventana del callback es de **5 minutos**. OpenCode almacena los tokens de acceso y refresh y los rota en cada renovación. |
+| **OAuth (browser)** | OAuth2 Authorization Code + PKCE (S256). El plugin obtiene los metadatos de discovery en `/.well-known/litellm-cli-auth`, registra el cliente de forma dinámica, abre el navegador y captura la redirección en un servidor callback exclusivamente loopback (`127.0.0.1`, puerto efímero). La ventana del callback es de **5 minutos**. OpenCode almacena los tokens de acceso y refresh y los rota en cada renovación. |
 | **API key** | OpenCode pide la clave de forma nativa ("Enter your API key") y la guarda en su almacén de credenciales. El plugin solo declara el prompt de la URL del gateway (preguntado cuando no está configurada). La clave la valida el gateway en el primer uso. Las credenciales de API key nunca expiran y nunca se renuevan. |
 
 ## Catálogo de modelos
@@ -145,13 +146,60 @@ disponible.
 | Tool | Comando | Descripción |
 |------|---------|-------------|
 | `actsis_litellm_status` | `/actsis-litellm-status` | Muestra estado de credenciales, antigüedad y tamaño del caché del catálogo, URL del gateway e información de budget (recurre al último snapshot cacheado entre turnos). |
-| `actsis_litellm_models` | `/actsis-litellm-models` | Fuerza una sincronización fresca del catálogo de modelos y reporta modelos agregados/eliminados. |
-| `actsis_litellm_logout` | `/actsis-litellm-logout` | Revoca el refresh token (SSO), limpia el estado local y el caché. |
 | `actsis_litellm_budget` | `/actsis-litellm-budget` | Fuerza una actualización del budget y reporta el resultado exacto (línea de gauge o el motivo preciso del fallo, además del último snapshot conocido cuando la lectura en vivo falla). |
+| `actsis_litellm_models` | `/actsis-litellm-models` | Fuerza una sincronización fresca del catálogo de modelos y reporta modelos agregados/eliminados. |
+| `actsis_litellm_usage` | `/actsis-litellm-usage` | Muestra gasto, tokens y peticiones por modelo para una ventana: sin argumentos (últimos 30 días), un número de días (`14`) o un rango explícito (`2025-03-01 .. 2025-03-31`). Ver [Uso por modelo](#uso-por-modelo). |
+| `actsis_litellm_top` | `/actsis-litellm-top` | Activa, desactiva o alterna el widget Top-5 de gasto de la TUI (`on \| off \| toggle`; sin argumentos alterna) y persiste la preferencia. Ver [Widget de la TUI](#widget-de-la-tui). |
+| `actsis_litellm_logout` | `/actsis-litellm-logout` | Revoca el refresh token (OAuth), limpia el estado local y el caché. |
 
 Los comandos son plantillas ligeras que indican al agente llamar al tool
 correspondiente y resumir el resultado, de modo que funcionan tanto en modo
 TUI como en modo servidor.
+
+## Uso por modelo
+
+La pareja `/actsis-litellm-usage` + tool `actsis_litellm_usage` muestra
+gasto, tokens y peticiones agregados por modelo a partir de los registros de
+gasto del gateway:
+
+```
+Usage 2025-02-26 → 2025-03-27 (30 days): $1.2345
+Model                      Spend  Tokens  Reqs
+--------------------------------------------------
+oc/gpt-x                 $0.9800   61.0k   130
+oc/claude-y              $0.2545   28.0k    80
+--------------------------------------------------
+Total                    $1.2345   89.0k   210
+```
+
+- **Ventana:** sin argumentos → últimos 30 días inclusive; un número como
+  `14` → últimos N días; un rango explícito e inclusivo
+  `2025-03-01 .. 2025-03-31`.
+- **Nombres públicos de modelo:** los logs de gasto de LiteLLM registran el
+  nombre interno de despliegue (p. ej. `openai/glm-5.3-flash`); el comando
+  los mapea a los aliases públicos del catálogo (`oc/glm-5.3-flash`) por id
+  exacto o por sufijo compartido tras la última `/`, fusionando las filas
+  que colisionan en el mismo modelo público. Los modelos sin alias público
+  (p. ej. embeddings) conservan su nombre interno.
+- **Paridad con el dashboard:** la consulta primaria usa
+  `GET /user/daily/activity/aggregated` con un filtro `user_id` tomado de la
+  credencial almacenada — totales estables en una sola llamada y delimitados
+  al usuario propio ("Your Usage": un token admin sin el filtro vería el
+  gasto de toda la org). Si el gateway no expone el endpoint agregado, el
+  plugin recorre el endpoint paginado `GET /user/daily/activity` página a
+  página y suma filas (los metadatos por página son page-scoped).
+- **Nota de actividad del gateway:** la tabla cierra con una línea
+  `Gateway requests:` proveniente de `GET /gateway/daily/activity`;
+  el card *Total Requests* del dashboard cuenta las peticiones respondidas
+  por el gateway (incluye tráfico no registrado en las tablas de gasto,
+  p. ej. audio), por eso puede diferir de la columna `Reqs` de la tabla
+  (intentos upstream, solo chat-completions).
+- **Caveat:** LiteLLM solo calcula gasto para tráfico OpenAI-compatible de
+  `/v1/chat/completions` (`/v1/messages`, passthrough y peticiones sin
+  registro reportan cero o están ausentes).
+- **Errores de permisos:** `401` se mapea a "inicia sesión de nuevo"; `403`
+  indica que la credencial carece del permiso de las rutas de uso/gasto
+  (acción de admin, reloguear no lo corrige).
 
 ## Widget de la TUI
 
@@ -166,6 +214,32 @@ agente, y después de que `actsis_litellm_budget` lo refresque); se actualiza
 al arrancar y tras cada turno con una breve espera (debounce) para que la
 escritura del lado servidor gane la carrera. No renderiza nada cuando no hay
 datos de budget.
+
+### Filas Top-5 de modelos
+
+Bajo la línea de Budget, el widget también renderiza las **Top-5 de modelos
+por gasto** de los últimos 7 días: una línea de título `Top models (7d) ·
+$<total>` con su separador `=`, y hasta 5 filas con el nombre del modelo a la
+izquierda, el gasto y el porcentaje de participación alineados a la derecha y
+un gauge de 8 celdas por fila (mismo estilo que el gauge de Budget). El
+relleno de columnas usa espacios no separables (NBSP) para que la alineación
+tabular sobreviva a los sanitizadores de terminal que colapsan carreras de
+espacios ASCII.
+
+Las filas viajan por la misma tubería que el snapshot de budget (se
+persisten en el `state.json` del plugin y se refrescan en `session.idle`, fin
+de cada turno del agente) con una **TTL de 5 minutos**; cualquier fallo limpia
+las filas silenciosamente y el bloque se oculta cuando no hay gasto en la
+ventana. Los nombres de fila usan la misma resolución de alias público que la
+tabla de [uso por modelo](#uso-por-modelo).
+
+**Alterna el widget con `/actsis-litellm-top`:** sin argumentos lo alterna;
+`on` / `off` lo fuerzan. La elección persiste entre sesiones en el archivo
+propio del plugin
+`~/.local/share/opencode/actsis-litellm/preferences.json` (clave
+`"topModelsWidget"`; activado por defecto). Con `off` las filas se limpian de
+inmediato y el plugin deja de consultar el gateway para el widget; con `on` se
+refresca al momento.
 
 ### Nota de packaging
 
@@ -198,6 +272,31 @@ budget — consulta:
 - [`docs/login-flow.md`](docs/login-flow.md) — la secuencia completa de login
   OAuth2 PKCE, la rotación de tokens y el flujo de logout.
 
+## TLS con una CA privada (interna)
+
+Node.js incluye una instantánea fija de las CAs raíz de Mozilla e ignora el
+almacén de certificados del sistema operativo, de modo que un gateway cuyo
+certificado HTTPS lo emitió una CA privada (habitual en entornos corporativos)
+falla la validación dentro del login y del chat aunque la CA esté instalada
+en el sistema (Windows `certmgr.msc` / `certlm.msc`).
+
+Este plugin lo maneja de forma automática: al arrancar **carga las CAs del
+sistema operativo por encima del set embebido de Node** (el comportamiento de
+`--use-system-ca`, APIs de Node >= 22.19.0; en versiones anteriores queda en
+un no-op seguro). Navegadores y HTTPS público siguen funcionando igual; los
+gateways firmados por una CA interna se vuelven accesibles sin configuración
+por máquina. La carga es estrictamente aditiva, se ejecuta una sola vez por
+sesión, nunca bloquea el arranque si el manejo TLS falla y se puede desactivar.
+
+- **Opt-out:** define `ACTSIS_LITELLM_NO_SYSTEM_CA=1` antes de iniciar
+  OpenCode.
+- **Si la confianza aún falla** (Node antiguo, almacenamiento inusual), el
+  mensaje de error reporta la solución exacta por plataforma: Windows →
+  `setx NODE_USE_SYSTEM_CA 1` (Node >= 22.19.0) o exportar la CA a PEM
+  (`certutil -encode ca.cer ca.pem`) y fijarla en `NODE_EXTRA_CA_CERTS`;
+  Linux → `--use-openssl-ca` / `SSL_CERT_FILE`. Nunca deshabilites la
+  verificación TLS: confía en la CA emisora.
+
 ## Hardening de errores
 
 El plugin clasifica los errores de límite del gateway mediante el hook de
@@ -216,6 +315,16 @@ respuesta**.
 - **Throttling (429)** — los errores de `throttling_error` generan una
   advertencia con el tipo de rate limit y la hora de reinicio, por ejemplo
   `Rate limit reached (tpm). Resets at 14:32 (~3 min).`
+- **Causa raíz de las fallas de red** — los fallos de transporte ya no se
+  reportan como el opaco `TypeError: fetch failed`: el mensaje nombra la
+  causa real escondida en la cadena de causas (`ENOTFOUND`, `ECONNREFUSED`,
+  códigos de confianza TLS como `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`,
+  `ETIMEDOUT`, `ECONNRESET`) con una sugerencia accionable para las clases
+  conocidas (DNS/VPN, gateway caído, remediación TLS de
+  [la sección TLS](#tls-con-una-ca-privada-interna)). Aplica al discovery,
+  al registro de cliente, al intercambio/refresh/revocación de tokens, al
+  catálogo, al budget y a los endpoints de uso; una falla de red nunca se
+  confunde con una credencial rechazada.
 
 Para una respuesta accionable al usuario, los tools `actsis_litellm_status`
 y `actsis_litellm_budget` reportan el motivo exacto de cada fallo (sin
@@ -228,10 +337,11 @@ red/timeout).
 |---------|----------|
 | Proveedor sin configurar / falta la URL del gateway | Ejecuta `opencode auth login`, selecciona `actsis-litellm` e introduce la URL del gateway. O define `ACTSIS_LITELLM_URL` / agrega `url` a las opciones del plugin. |
 | El login expiró | La ventana del callback loopback es de 5 minutos. Si el paso del navegador tomó más tiempo, ejecuta `opencode auth login` de nuevo. |
-| Refresh rechazado (`invalid_grant`) | El refresh token de SSO expiró, fue rotado en otro lugar o fue revocado. Inicia sesión de nuevo. |
+| Refresh rechazado (`invalid_grant`) | El refresh token de OAuth expiró, fue rotado en otro lugar o fue revocado. Inicia sesión de nuevo. |
 | Los modelos no aparecen en el selector | Ejecuta `/actsis-litellm-models` para forzar la sincronización y luego reinicia OpenCode. Revisa el conteo del caché con `/actsis-litellm-status`. |
-| El gateway rechaza la credencial | Para SSO, inicia sesión de nuevo para obtener tokens frescos. Para API keys, verifica la clave en la UI del gateway y vuelve a iniciar sesión — la clave solo se comprueba por el gateway en el primer uso, no durante el login. |
+| El gateway rechaza la credencial | Para OAuth (browser), inicia sesión de nuevo para obtener tokens frescos. Para API keys, verifica la clave en la UI del gateway y vuelve a iniciar sesión — la clave solo se comprueba por el gateway en el primer uso, no durante el login. |
 | La credencial sigue activa tras `actsis_litellm_logout` | El tool revoca el refresh token y limpia el estado local, pero la credencial guardada en el almacén de integraciones de OpenCode debe desconectarse desde la UI de auth nativa: no existe una API de plugin para borrarla. |
+| Un error nombra la causa de red (DNS, conexión rechazada, TLS, timeout, reset) en vez de `fetch failed` | Los fallos de transporte reportan su causa real con sugerencias accionables. Si la causa es un código TLS contra un gateway con CA interna (`UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, `SELF_SIGNED_CERT_IN_CHAIN`, ...): instala la CA emisora en el almacén de confianza del SO y arranca Node con `--use-system-ca`, o apunta `NODE_EXTRA_CA_CERTS` al bundle de la CA. Ver [TLS con una CA privada (interna)](#tls-con-una-ca-privada-interna). |
 
 ## Notas de seguridad
 

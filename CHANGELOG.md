@@ -1,5 +1,71 @@
 # Changelog
 
+## 0.3.0 — 2026-10-09 — Paridad con pi-actsis-litellm (uso, Top-5, TLS, OAuth)
+
+### Agregado
+
+- **Capa de datos de uso con paridad de dashboard** — la consulta primaria usa
+  `GET /user/daily/activity/aggregated` con un filtro `user_id` tomado de la
+  credencial almacenada (totales estables en una sola llamada, delimitados al
+  usuario propio; un token admin sin el filtro vería el gasto org-wide).
+  Fallback de paginación completa del endpoint clásico
+  `GET /user/daily/activity`, adoptando los metadatos por página solo cuando
+  hay una página.
+- **Aliasing público para las filas de gasto** — los nombres internos de
+  despliegue de LiteLLM (`openai/...`) se mapean a los aliases públicos del
+  catálogo (`oc/...`) por id exacto o por sufijo compartido tras la última
+  `/` (primero ordenado en caso de ambigüedad), fusionando las filas del
+  mismo modelo público en tiempo de presentación.
+- **Comando `/actsis-litellm-usage` + tool `actsis_litellm_usage`** — gasto,
+  tokens y peticiones por modelo: sin argumentos (últimos 30 días
+  inclusivos), un número de días (`14`, mínimo 1) o un rango explícito
+  inclusivo `YYYY-MM-DD .. YYYY-MM-DD`. Tabla alineada Modelo / Gasto /
+  Tokens / Reqs con tokens compactos (k/M) y fila Total, más una nota de
+  actividad del gateway (`GET /gateway/daily/activity`, la fuente del
+  *Total Requests* del dashboard, con tráfico no registrado).
+- **Filas Top-5 en el widget de la TUI + gauge de participación** — bajo la
+  línea de budget se renderizan los 5 primeros modelos por gasto de los
+  últimos 7 días (título `Top models (7d) · $<total>`, separador `=`, gasto y
+  porcentaje alineados a la derecha, gauge de 8 celdas por fila). Filas
+  persistidas en el `state.json` del plugin, refrescadas en `session.idle`
+  (mismos disparadores que el budget) con TTL de 5 minutos; relleno de
+  columnas con espacios no separables (NBSP) para que la alineación
+  sobreviva a los sanitizadores de terminal.
+- **Preferencia persistente del widget Top-5** — `/actsis-litellm-top` y el
+  tool `actsis_litellm_top` aceptan `on`, `off` o `toggle` (sin argumentos
+  alterna); la elección persiste en el archivo propio del plugin
+  `~/.local/share/opencode/actsis-litellm/preferences.json` (clave
+  `"topModelsWidget"`, activado por defecto, escritura atómica). `off` limpia
+  las filas de inmediato y deja de consultar el gateway; `on` refresca al
+  momento.
+- **Bootstrap TLS de CAs del sistema** — al arrancar el plugin carga las CAs
+  del sistema operativo por encima del set embebido de Node (comportamiento
+  de `--use-system-ca`, APIs de Node >= 22.19.0 con no-op seguro), de modo
+  que gateways firmados por una CA privada interna funcionen sin
+  configuración por máquina. Estrictamente aditivo, una vez por sesión,
+  fail-open y con opt-out vía `ACTSIS_LITELLM_NO_SYSTEM_CA=1`. Los errores de
+  confianza TLS llevan la remediación concreta por plataforma
+  (`NODE_USE_SYSTEM_CA`, `certutil -encode` → `NODE_EXTRA_CA_CERTS`,
+  `--use-openssl-ca` / `SSL_CERT_FILE`).
+
+### Cambiado
+
+- **Etiqueta visible del inicio de sesión renombrada a "OAuth (browser)"** —
+  el gateway usa OAuth2 PKCE, no SSO; el id del método (`sso-browser`) y los
+  identificadores de la credencial almacenada no cambian (compatibilidad con
+  credenciales ya guardadas). README/CHANGELOG actualizados.
+
+### Corregido
+
+- **Causa raíz de los errores de red** — los fallos de transporte ya no se
+  reportan como el opaco `TypeError: fetch failed`: el mensaje recorre la
+  cadena de `cause` y nombra el motivo real (`ENOTFOUND`, `ECONNREFUSED`,
+  códigos de confianza TLS, `ETIMEDOUT`, `ECONNRESET`) con una sugerencia
+  accionable para las clases conocidas. Aplica a discovery, registro de
+  cliente, intercambio/refresh/revocación de tokens, catálogo, budget y uso
+  (`AuthError` ahora envuelve los `TypeError` crudos de esos flujos y las
+  fallas de red nunca se confunden con una credencial rechazada).
+
 ## 0.2.0 — API de plugins de OpenCode v2
 
 ### Cambios incompatibles (breaking)
