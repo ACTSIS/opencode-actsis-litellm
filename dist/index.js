@@ -31,6 +31,184 @@ var CatalogError = class extends ActsisLiteLLMError {
   }
 };
 
+// src/tls-config.ts
+var ONE_SHOT_ATTEMPTS = /* @__PURE__ */ new Set();
+function normalizePem(cert) {
+  return cert.replace(/\r/g, "").replace(/\s+/g, "\n").trim();
+}
+function parseOptOutEnv(value) {
+  if (value === void 0) return false;
+  return ["1", "true", "yes"].includes(value.trim().toLowerCase());
+}
+function unionCertificates(primary, secondary) {
+  const merged = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const cert of [...primary, ...secondary]) {
+    const key = normalizePem(cert);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(cert);
+  }
+  return merged;
+}
+function normalizedSet(certs) {
+  const set = /* @__PURE__ */ new Set();
+  for (const cert of certs) set.add(normalizePem(cert));
+  return set;
+}
+async function loadTls() {
+  const mod = await import("tls");
+  if (typeof mod.getCACertificates !== "function" || typeof mod.setDefaultCACertificates !== "function") {
+    throw new Error("runtime lacks node:tls CA management APIs");
+  }
+  return mod;
+}
+async function configureSystemCa(options = {}) {
+  const onceKey = options.onceKey ?? "default";
+  if (parseOptOutEnv(options.optOutEnv)) {
+    return { kind: "disabled" };
+  }
+  if (ONE_SHOT_ATTEMPTS.has(onceKey)) {
+    return { kind: "already-configured" };
+  }
+  ONE_SHOT_ATTEMPTS.add(onceKey);
+  let tlsApi;
+  try {
+    tlsApi = options.tlsOverride ?? await loadTls();
+  } catch (err) {
+    return {
+      kind: "unsupported",
+      reason: err instanceof Error ? err.message : String(err)
+    };
+  }
+  try {
+    const bundled = tlsApi.getCACertificates("bundled");
+    let system;
+    try {
+      system = tlsApi.getCACertificates("system");
+    } catch (err) {
+      return {
+        kind: "failed",
+        reason: err instanceof Error ? `node:tls rejected the "system" source: ${err.message}` : String(err)
+      };
+    }
+    const bundledSet = normalizedSet(bundled);
+    const systemSet = normalizedSet(system);
+    const added = [...systemSet].filter((c) => !bundledSet.has(c));
+    if (added.length === 0) {
+      return { kind: "empty-system", addedCertificates: 0 };
+    }
+    const merged = unionCertificates(bundled, system);
+    tlsApi.setDefaultCACertificates(merged);
+    return { kind: "configured", addedCertificates: added.length };
+  } catch (err) {
+    return {
+      kind: "failed",
+      reason: err instanceof Error ? err.message : String(err)
+    };
+  }
+}
+var TLS_TRUST_ERROR_CODES = /* @__PURE__ */ new Set([
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "CERT_SIGNATURE_FAILURE",
+  "CERT_HAS_EXPIRED",
+  "ERR_TLS_CERT_ALTNAME_INVALID"
+]);
+function isTlsTrustIssueCode(code) {
+  if (code === void 0) return false;
+  return TLS_TRUST_ERROR_CODES.has(code) || code.startsWith("ERR_SSL");
+}
+function tlsTrustRemediationMessage(code) {
+  if (!isTlsTrustIssueCode(code)) return null;
+  return "the gateway's TLS certificate is not trusted by Node (Node ignores the OS certificate store by default). This plugin auto-loads OS system CAs at startup (--use-system-ca equivalent); to opt out set ACTSIS_LITELLM_NO_SYSTEM_CA=1. If trust still fails: on Windows run `setx NODE_USE_SYSTEM_CA 1` (Node \u2265 22.19.0, CA present in certmgr.msc) or export the CA to PEM (`certutil -encode ca.cer ca.pem`) and set NODE_EXTRA_CA_CERTS to it; on Linux use --use-openssl-ca / SSL_CERT_FILE.";
+}
+
+// src/network-error.ts
+var MAX_CHAIN_DEPTH = 5;
+var HINTS = [
+  {
+    match: (link) => link.code === "ENOTFOUND" || link.code === "EAI_AGAIN",
+    text: "the gateway host could not be resolved; check the configured URL and DNS/VPN."
+  },
+  {
+    match: (link) => link.code === "ECONNREFUSED",
+    text: "the connection was refused; check that the gateway is running and reachable."
+  },
+  {
+    match: (link) => [
+      "ETIMEDOUT",
+      "ESOCKETTIMEDOUT",
+      "UND_ERR_CONNECT_TIMEOUT",
+      "UND_ERR_HEADERS_TIMEOUT",
+      "UND_ERR_BODY_TIMEOUT"
+    ].includes(link.code ?? "") || isTimeoutLink(link),
+    text: "the request timed out before the gateway responded."
+  },
+  {
+    match: (link) => link.code === "ECONNRESET",
+    text: "the connection was reset by the peer."
+  }
+];
+function isTimeoutLink(link) {
+  if (link.name === "TimeoutError") return true;
+  if (link.code === "23") return true;
+  return false;
+}
+function hintFor(link) {
+  if (isTlsTrustIssueCode(link.code)) {
+    return tlsTrustRemediationMessage(link.code) ?? "";
+  }
+  const hint = HINTS.find((h) => h.match(link));
+  return hint ? hint.text : "";
+}
+function readCode(value) {
+  if (typeof value === "string" && value) return value;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return void 0;
+}
+function fetchFailureMessage(err) {
+  if (!(err instanceof Error)) {
+    return String(err);
+  }
+  const links = [];
+  const visited = /* @__PURE__ */ new Set();
+  let current = err;
+  for (let depth = 0; depth < MAX_CHAIN_DEPTH; depth++) {
+    if (!(current instanceof Error)) break;
+    if (visited.has(current)) break;
+    visited.add(current);
+    const rawCode = current.code;
+    links.push({
+      name: current.name,
+      code: readCode(rawCode),
+      message: current.message
+    });
+    const cause = current.cause;
+    if (cause === null || cause === void 0 || typeof cause !== "object") {
+      break;
+    }
+    current = cause;
+  }
+  const hasCause = links.length > 1;
+  const hasCode = links.some((l) => l.code !== void 0);
+  if (!hasCause && !hasCode) {
+    return err.message;
+  }
+  let deepest = links[links.length - 1];
+  for (let i = links.length - 1; i >= 0; i--) {
+    if (links[i].code !== void 0) {
+      deepest = links[i];
+      break;
+    }
+  }
+  const codeOrName = deepest.code ?? deepest.name;
+  const hintSuffix = hintFor(deepest);
+  return `${err.message} (${codeOrName}: ${deepest.message})${hintSuffix ? ` ${hintSuffix}` : ""}`;
+}
+
 // src/client.ts
 function getOrigin(url) {
   const parsed = new URL(url);
@@ -176,6 +354,31 @@ function discoveryUrl(baseUrl) {
   const normalized = baseUrl.replace(/\/+$/, "");
   return `${normalized}/.well-known/litellm-cli-auth`;
 }
+async function fetchOrThrow(url, init, makeError, label, fetchImpl) {
+  try {
+    return await fetchImpl(url, init);
+  } catch (err) {
+    throw makeError(`${label}: ${fetchFailureMessage(err)}`, err);
+  }
+}
+function authFetchOrThrow(url, init, label, timeoutMs, fetchImpl) {
+  return fetchOrThrow(
+    url,
+    { signal: AbortSignal.timeout(timeoutMs), ...init },
+    (message, cause) => new AuthError(message, { cause }),
+    label,
+    fetchImpl
+  );
+}
+function catalogFetchOrThrow(url, init, label, timeoutMs, fetchImpl) {
+  return fetchOrThrow(
+    url,
+    { signal: AbortSignal.timeout(timeoutMs), ...init },
+    (message, cause) => new CatalogError(message, { cause }),
+    label,
+    fetchImpl
+  );
+}
 async function fetchCliAuthDiscovery(baseUrl, timeoutMs, onAdaptation, fetchImpl = globalThis.fetch) {
   let response;
   try {
@@ -184,7 +387,7 @@ async function fetchCliAuthDiscovery(baseUrl, timeoutMs, onAdaptation, fetchImpl
     });
   } catch (err) {
     throw new DiscoveryError(
-      `Failed to fetch CLI auth discovery: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to fetch CLI auth discovery: ${fetchFailureMessage(err)}`,
       { cause: err }
     );
   }
@@ -218,19 +421,24 @@ function extractErrorDescription(body) {
   return parts.join(" \u2014 ");
 }
 async function registerClient(discovery, redirectUri, timeoutMs, fetchImpl = globalThis.fetch) {
-  const response = await fetchImpl(discovery.registrationEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      client_name: "opencode-actsis-litellm",
-      redirect_uris: [redirectUri],
-      token_endpoint_auth_method: "none",
-      grant_types: ["authorization_code", "refresh_token"],
-      response_types: ["code"]
-    }),
-    redirect: "manual",
-    signal: AbortSignal.timeout(timeoutMs)
-  });
+  const response = await authFetchOrThrow(
+    discovery.registrationEndpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_name: "opencode-actsis-litellm",
+        redirect_uris: [redirectUri],
+        token_endpoint_auth_method: "none",
+        grant_types: ["authorization_code", "refresh_token"],
+        response_types: ["code"]
+      }),
+      redirect: "manual"
+    },
+    "Client registration request failed",
+    timeoutMs,
+    fetchImpl
+  );
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? "unknown";
     throw new AuthError(
@@ -278,13 +486,18 @@ async function exchangeAuthorizationCode(discovery, input, timeoutMs, fetchImpl 
   params.set("client_id", input.clientId);
   params.set("code_verifier", input.codeVerifier);
   params.set("resource", discovery.resource);
-  const response = await fetchImpl(discovery.tokenEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-    redirect: "manual",
-    signal: AbortSignal.timeout(timeoutMs)
-  });
+  const response = await authFetchOrThrow(
+    discovery.tokenEndpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+      redirect: "manual"
+    },
+    "Token endpoint request failed",
+    timeoutMs,
+    fetchImpl
+  );
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? "unknown";
     throw new AuthError(
@@ -326,13 +539,18 @@ async function refreshGrant(discovery, input, timeoutMs, fetchImpl = globalThis.
   params.set("refresh_token", input.refreshToken);
   params.set("client_id", input.clientId);
   params.set("resource", discovery.resource);
-  const response = await fetchImpl(discovery.tokenEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-    redirect: "manual",
-    signal: AbortSignal.timeout(timeoutMs)
-  });
+  const response = await authFetchOrThrow(
+    discovery.tokenEndpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+      redirect: "manual"
+    },
+    "Token refresh request failed",
+    timeoutMs,
+    fetchImpl
+  );
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? "unknown";
     throw new AuthError(
@@ -377,13 +595,18 @@ async function revokeToken(discovery, input, timeoutMs, fetchImpl = globalThis.f
   const params = new URLSearchParams();
   params.set("token", input.token);
   params.set("client_id", input.clientId);
-  const response = await fetchImpl(discovery.revocationEndpoint, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: params.toString(),
-    redirect: "manual",
-    signal: AbortSignal.timeout(timeoutMs)
-  });
+  const response = await authFetchOrThrow(
+    discovery.revocationEndpoint,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: params.toString(),
+      redirect: "manual"
+    },
+    "Token revocation request failed",
+    timeoutMs,
+    fetchImpl
+  );
   if (response.status >= 300 && response.status < 400) {
     const location = response.headers.get("Location") ?? "unknown";
     throw new AuthError(
@@ -404,12 +627,17 @@ async function revokeToken(discovery, input, timeoutMs, fetchImpl = globalThis.f
 }
 async function fetchModels(baseUrl, apiKey, timeoutMs, fetchImpl = globalThis.fetch) {
   const normalized = baseUrl.replace(/\/+$/, "");
-  const response = await fetchImpl(`${normalized}/v1/models?include_metadata=true`, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`
+  const response = await catalogFetchOrThrow(
+    `${normalized}/v1/models?include_metadata=true`,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`
+      }
     },
-    signal: AbortSignal.timeout(timeoutMs)
-  });
+    "Failed to fetch models",
+    timeoutMs,
+    fetchImpl
+  );
   if (response.status === 401 || response.status === 403) {
     throw new AuthError(
       "Credential rejected by gateway. Run /login again."
@@ -436,12 +664,17 @@ async function fetchModelInfoV2(baseUrl, apiKey, timeoutMs, page, size, fetchImp
   const params = new URLSearchParams();
   params.set("size", String(size));
   params.set("page", String(page));
-  const response = await fetchImpl(`${normalized}/v2/model/info?${params.toString()}`, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`
+  const response = await catalogFetchOrThrow(
+    `${normalized}/v2/model/info?${params.toString()}`,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`
+      }
     },
-    signal: AbortSignal.timeout(timeoutMs)
-  });
+    `Failed to fetch model info (v2 page ${page})`,
+    timeoutMs,
+    fetchImpl
+  );
   if (response.status === 401 || response.status === 403) {
     throw new AuthError(
       "Credential rejected by gateway. Run /login again."
@@ -465,12 +698,17 @@ async function fetchModelInfoV2(baseUrl, apiKey, timeoutMs, page, size, fetchImp
 }
 async function fetchModelInfo(baseUrl, apiKey, timeoutMs, fetchImpl = globalThis.fetch) {
   const normalized = baseUrl.replace(/\/+$/, "");
-  const response = await fetchImpl(`${normalized}/v1/model/info`, {
-    headers: {
-      Authorization: `Bearer ${apiKey}`
+  const response = await catalogFetchOrThrow(
+    `${normalized}/v1/model/info`,
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`
+      }
     },
-    signal: AbortSignal.timeout(timeoutMs)
-  });
+    "Failed to fetch model info",
+    timeoutMs,
+    fetchImpl
+  );
   if (response.status === 401 || response.status === 403) {
     throw new AuthError(
       "Credential rejected by gateway. Run /login again."
@@ -1116,7 +1354,7 @@ async function requestJson(url, apiKey, timeoutMs, fetchImpl, label) {
     });
   } catch (err) {
     throw new CatalogError(
-      `Failed to fetch ${label}: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to fetch ${label}: ${fetchFailureMessage(err)}`,
       { cause: err }
     );
   }
@@ -1406,6 +1644,20 @@ function isOverflowErrorMessage(message) {
   return LITELLM_OVERFLOW_PATTERN.test(message);
 }
 
+// src/widget-events.ts
+var WIDGET_REFRESH_EVENT_TYPES = [
+  "session.idle",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted"
+];
+var WIDGET_REFRESH_TRIGGER_SET = new Set(
+  WIDGET_REFRESH_EVENT_TYPES
+);
+function isWidgetRefreshTrigger(type) {
+  return WIDGET_REFRESH_TRIGGER_SET.has(type);
+}
+
 // src/auth-store.ts
 import { access, readFile as readFile3, writeFile as writeFile3 } from "fs/promises";
 import os3 from "os";
@@ -1539,20 +1791,555 @@ async function ensureFreshToken(credential, context) {
   return credential.access;
 }
 
-// src/tools.ts
+// src/preferences.ts
 import path4 from "path";
+import { mkdir as mkdir3, readFile as readFile4, writeFile as writeFile4, rm as rm3 } from "fs/promises";
+import { renameSync as renameSync3 } from "fs";
 import os4 from "os";
-import { rm as rm3 } from "fs/promises";
-var DEFAULT_PLUGIN_DIR_NAME3 = "actsis-litellm";
+var PREFS_SCHEMA_VERSION = 1;
 var DEFAULT_APP_DIR_NAME3 = "opencode";
-var DEFAULT_TIMEOUT_MS = 3e4;
-var CACHE_FILE_NAME2 = "models-cache.json";
+var DEFAULT_PLUGIN_DIR_NAME3 = "actsis-litellm";
+var PREFS_FILE_NAME = "preferences.json";
+function defaultPreferences() {
+  return { version: PREFS_SCHEMA_VERSION, topModelsWidget: true };
+}
 function defaultPluginDir3() {
   const dataHome = process.env.XDG_DATA_HOME ? process.env.XDG_DATA_HOME : path4.join(os4.homedir(), ".local", "share");
   return path4.join(dataHome, DEFAULT_APP_DIR_NAME3, DEFAULT_PLUGIN_DIR_NAME3);
 }
+function preferencesPath(dir) {
+  return path4.join(dir ?? defaultPluginDir3(), PREFS_FILE_NAME);
+}
+async function readPreferences(dir) {
+  try {
+    const raw = await readFile4(preferencesPath(dir), "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return defaultPreferences();
+    }
+    const version = typeof parsed.version === "number" ? parsed.version : PREFS_SCHEMA_VERSION;
+    if (version !== PREFS_SCHEMA_VERSION) {
+      return defaultPreferences();
+    }
+    return {
+      version: PREFS_SCHEMA_VERSION,
+      topModelsWidget: typeof parsed.topModelsWidget === "boolean" ? parsed.topModelsWidget : defaultPreferences().topModelsWidget
+    };
+  } catch {
+    return defaultPreferences();
+  }
+}
+function readTopModelsWidgetEnabled(dir) {
+  return readPreferences(dir).then((prefs) => prefs.topModelsWidget);
+}
+async function updateTopModelsWidgetEnabled(enabled, dir) {
+  try {
+    await writePreferences(
+      { ...defaultPreferences(), ...await readPreferences(dir), topModelsWidget: enabled },
+      dir
+    );
+  } catch {
+  }
+}
+async function writePreferences(prefs, dir) {
+  const file = preferencesPath(dir);
+  await mkdir3(path4.dirname(file), { recursive: true });
+  const tmpFile = `${file}.tmp.${process.pid}`;
+  try {
+    const toWrite = {
+      ...prefs,
+      version: PREFS_SCHEMA_VERSION
+    };
+    await writeFile4(tmpFile, JSON.stringify(toWrite, null, 2), "utf8");
+    renameSync3(tmpFile, file);
+  } catch (err) {
+    try {
+      await rm3(tmpFile, { force: true });
+    } catch {
+    }
+    throw err;
+  }
+}
+
+// src/top-widget.ts
+import { readFile as readFile5 } from "fs/promises";
+import os5 from "os";
+import path5 from "path";
+
+// src/usage.ts
+var DAY_MS = 24 * 60 * 60 * 1e3;
+var MAX_USAGE_PAGES = 50;
+var USAGE_PAGE_SIZE = 200;
+function asNullableNumber2(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+function asRecord2(value) {
+  return typeof value === "object" && value !== null ? value : {};
+}
+function isoDay(ms) {
+  const d = new Date(ms);
+  const y = String(d.getUTCFullYear()).padStart(4, "0");
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+function parseIsoDayOrNull(value) {
+  if (!value) return null;
+  const parsed = Date.parse(`${value}T00:00:00Z`);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+function addDays(day, days) {
+  const base = parseIsoDayOrNull(day);
+  if (base === null) return day;
+  return isoDay(base + days * DAY_MS);
+}
+function resolveDefaultUsageRange(nowMs) {
+  const now = typeof nowMs === "number" && Number.isFinite(nowMs) ? nowMs : Date.now();
+  const endDate = isoDay(now);
+  return { startDate: addDays(endDate, -29), endDate };
+}
+function resolveUsageRangeDays(days, nowMs) {
+  const now = typeof nowMs === "number" && Number.isFinite(nowMs) ? nowMs : Date.now();
+  const clamped = Math.max(1, Math.floor(days));
+  const endDate = isoDay(now);
+  const startDate = isoDay(now - (clamped - 1) * DAY_MS);
+  return { startDate, endDate };
+}
+function rangeLengthDays(range) {
+  const start = parseIsoDayOrNull(range.startDate);
+  const end = parseIsoDayOrNull(range.endDate);
+  if (start === null || end === null) return 0;
+  return Math.round((end - start) / DAY_MS) + 1;
+}
+function extractCredentialUserId(credential) {
+  const metadata = asRecord2(credential?.metadata);
+  const userId = metadata.userId;
+  return typeof userId === "string" && userId ? userId : null;
+}
+function parseUsagePage(body) {
+  const record = asRecord2(body);
+  const metadata = asRecord2(record.metadata);
+  return {
+    results: Array.isArray(record.results) ? record.results.map(asRecord2) : [],
+    metadata,
+    hasMore: metadata.has_more === true,
+    totalPages: asNullableNumber2(metadata.total_pages)
+  };
+}
+function parseNotFound(status) {
+  return status === 404 || status === 405;
+}
+async function requestUsagePage(baseUrl, apiKey, timeoutMs, range, filters, fetchImpl) {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  const path7 = filters.aggregated ? `${normalized}/user/daily/activity/aggregated` : `${normalized}/user/daily/activity`;
+  const params = new URLSearchParams({
+    start_date: range.startDate,
+    end_date: range.endDate
+  });
+  if (filters.userId) params.set("user_id", filters.userId);
+  if (filters.page !== void 0) params.set("page", String(filters.page));
+  if (filters.pageSize !== void 0) params.set("page_size", String(filters.pageSize));
+  let response;
+  try {
+    response = await fetchImpl(`${path7}?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+  } catch (err) {
+    throw new CatalogError(
+      `Failed to fetch model usage: ${fetchFailureMessage(err)}`,
+      { cause: err }
+    );
+  }
+  if (parseNotFound(response.status)) {
+    return { found: false };
+  }
+  if (response.status === 401) {
+    throw new AuthError("Credential rejected by gateway. Run /login again.");
+  }
+  if (response.status === 403) {
+    throw new AuthError(
+      "Gateway denied access to usage info (403): this credential lacks the spend/usage routes permission. Ask a gateway admin to grant it."
+    );
+  }
+  if (!response.ok) {
+    throw new CatalogError(
+      `Failed to fetch model usage: ${response.status}: ${response.statusText}`
+    );
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch (err) {
+    throw new CatalogError(
+      `Model usage response is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err }
+    );
+  }
+  return { found: true, body };
+}
+async function fetchModelUsage(baseUrl, apiKey, timeoutMs, range, options = {}, fetchImpl = globalThis.fetch) {
+  const defaultRange = resolveDefaultUsageRange();
+  const effectiveRange = {
+    startDate: range?.startDate ?? defaultRange.startDate,
+    endDate: range?.endDate ?? defaultRange.endDate
+  };
+  const aggregated = await requestUsagePage(baseUrl, apiKey, timeoutMs, effectiveRange, {
+    userId: options.userId,
+    aggregated: true
+  }, fetchImpl);
+  if (aggregated.found && aggregated.body !== void 0) {
+    return summarizeUsage(effectiveRange, [parseUsagePage(aggregated.body)], {
+      adoptMetadataTotals: true
+    });
+  }
+  const pages = [];
+  for (let page = 1; page <= MAX_USAGE_PAGES; page++) {
+    const result = await requestUsagePage(baseUrl, apiKey, timeoutMs, effectiveRange, {
+      userId: options.userId,
+      aggregated: false,
+      page,
+      pageSize: USAGE_PAGE_SIZE
+    }, fetchImpl);
+    if (result.found && result.body !== void 0) {
+      const parsed = parseUsagePage(result.body);
+      pages.push(parsed);
+      if (!parsed.hasMore) break;
+    } else {
+      break;
+    }
+  }
+  if (pages.length === 0) {
+    throw new CatalogError("Failed to fetch model usage: no usage endpoint available");
+  }
+  const singlePage = pages.length === 1 && pages[0].totalPages !== null && pages[0].totalPages <= 1;
+  return summarizeUsage(effectiveRange, pages, {
+    adoptMetadataTotals: singlePage
+  });
+}
+function readMetrics(record) {
+  const nested = asRecord2(record.metrics);
+  return { ...record, ...nested };
+}
+function newAggregator() {
+  return { spend: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, apiRequests: 0 };
+}
+function accumulate(totals, metrics) {
+  totals.spend += asNullableNumber2(metrics.spend) ?? 0;
+  totals.promptTokens += asNullableNumber2(metrics.prompt_tokens) ?? 0;
+  totals.completionTokens += asNullableNumber2(metrics.completion_tokens) ?? 0;
+  totals.totalTokens += asNullableNumber2(metrics.total_tokens) ?? 0;
+  totals.apiRequests += asNullableNumber2(metrics.api_requests) ?? 0;
+}
+function toSummary(range, totals, perModel) {
+  const models = [...perModel.entries()].map(([model, agg]) => ({
+    model,
+    spend: agg.spend,
+    promptTokens: agg.promptTokens,
+    completionTokens: agg.completionTokens,
+    totalTokens: agg.totalTokens,
+    apiRequests: agg.apiRequests
+  })).sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0) || a.model.localeCompare(b.model));
+  return {
+    startDate: range.startDate,
+    endDate: range.endDate,
+    totals: {
+      spend: totals.spend,
+      promptTokens: totals.promptTokens,
+      completionTokens: totals.completionTokens,
+      totalTokens: totals.totalTokens,
+      apiRequests: totals.apiRequests
+    },
+    models
+  };
+}
+function summarizeUsage(range, pages, opts) {
+  const totalsAgg = newAggregator();
+  const perModel = /* @__PURE__ */ new Map();
+  for (const pageData of pages) {
+    for (const row of pageData.results) {
+      accumulate(totalsAgg, readMetrics(row));
+      const breakdown = asRecord2(row.breakdown);
+      const models = asRecord2(breakdown.models);
+      for (const [model, rawMetrics] of Object.entries(models)) {
+        const agg = perModel.get(model) ?? newAggregator();
+        accumulate(agg, readMetrics(asRecord2(rawMetrics)));
+        perModel.set(model, agg);
+      }
+    }
+  }
+  if (opts.adoptMetadataTotals && pages.length === 1) {
+    const metadata = pages[0].metadata;
+    const metadataFields = [
+      ["spend", metadata.total_spend],
+      ["promptTokens", metadata.total_prompt_tokens],
+      ["completionTokens", metadata.total_completion_tokens],
+      ["totalTokens", metadata.total_tokens],
+      ["apiRequests", metadata.total_api_requests]
+    ];
+    for (const [field, value] of metadataFields) {
+      const n = asNullableNumber2(value);
+      if (n !== null) totalsAgg[field] = n;
+    }
+  }
+  const modelSpendSum = [...perModel.values()].reduce((sum, m) => sum + m.spend, 0);
+  if (modelSpendSum > totalsAgg.spend) {
+    totalsAgg.spend = modelSpendSum;
+  }
+  return toSummary(range, totalsAgg, perModel);
+}
+async function fetchGatewayRequests(baseUrl, apiKey, timeoutMs, range, options = {}, fetchImpl = globalThis.fetch) {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  const defaultRange = resolveDefaultUsageRange();
+  const params = new URLSearchParams({
+    start_date: range.startDate ?? defaultRange.startDate,
+    end_date: range.endDate ?? defaultRange.endDate
+  });
+  if (options.userId) params.set("user_id", options.userId);
+  let response;
+  try {
+    response = await fetchImpl(`${normalized}/gateway/daily/activity?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+  } catch (err) {
+    throw new CatalogError(
+      `Failed to fetch gateway activity: ${fetchFailureMessage(err)}`,
+      { cause: err }
+    );
+  }
+  if (parseNotFound(response.status)) return null;
+  if (response.status === 401) {
+    throw new AuthError("Credential rejected by gateway. Run /login again.");
+  }
+  if (response.status === 403) {
+    throw new AuthError(
+      "Gateway denied access to gateway activity (403): this credential lacks the required permission. Ask a gateway admin to grant it."
+    );
+  }
+  if (!response.ok) {
+    throw new CatalogError(
+      `Failed to fetch gateway activity: ${response.status}: ${response.statusText}`
+    );
+  }
+  let parsed;
+  try {
+    parsed = await response.json();
+  } catch (err) {
+    throw new CatalogError(
+      `Gateway activity response is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err }
+    );
+  }
+  const record = asRecord2(parsed);
+  const metadata = asRecord2(record.metadata);
+  const merged = { ...record, ...metadata };
+  const successful = asNullableNumber2(merged.total_successful_requests) ?? 0;
+  const failed = asNullableNumber2(merged.total_failed_requests) ?? 0;
+  const totalMeta = asNullableNumber2(merged.total_requests);
+  return { successful, failed, total: totalMeta ?? successful + failed };
+}
+function mapModelAliases(modelKeys, publicIds) {
+  const aliases = /* @__PURE__ */ new Map();
+  const publicSet = new Set(publicIds);
+  const suffixIndex = /* @__PURE__ */ new Map();
+  for (const id of [...publicIds].sort()) {
+    const suffix = id.split("/").pop().toLowerCase();
+    if (!suffixIndex.has(suffix)) suffixIndex.set(suffix, id);
+  }
+  for (const key of modelKeys) {
+    if (!key || publicSet.has(key)) continue;
+    const normalized = key.split("/").pop().toLowerCase();
+    const publicId = suffixIndex.get(normalized);
+    if (publicId) aliases.set(key, publicId);
+  }
+  return aliases;
+}
+function applyModelAliases(summary, aliases) {
+  if (aliases.size === 0) {
+    return { ...summary, models: summary.models.map((m) => ({ ...m })) };
+  }
+  const merged = /* @__PURE__ */ new Map();
+  for (const entry of summary.models) {
+    const name = aliases.get(entry.model) ?? entry.model;
+    const existing = merged.get(name);
+    if (existing) {
+      existing.spend = (existing.spend ?? 0) + (entry.spend ?? 0);
+      existing.promptTokens = (existing.promptTokens ?? 0) + (entry.promptTokens ?? 0);
+      existing.completionTokens = (existing.completionTokens ?? 0) + (entry.completionTokens ?? 0);
+      existing.totalTokens = (existing.totalTokens ?? 0) + (entry.totalTokens ?? 0);
+      existing.apiRequests = (existing.apiRequests ?? 0) + (entry.apiRequests ?? 0);
+    } else {
+      merged.set(name, { ...entry, model: name });
+    }
+  }
+  return {
+    ...summary,
+    models: [...merged.values()].sort(
+      (a, b) => (b.spend ?? 0) - (a.spend ?? 0) || a.model.localeCompare(b.model)
+    )
+  };
+}
+function formatCompactTokens(tokens) {
+  if (tokens === null || tokens === void 0) return "-";
+  if (tokens >= 1e9) return `${(tokens / 1e9).toFixed(2)}B`;
+  if (tokens >= 1e6) {
+    const millions = tokens / 1e6;
+    return `${millions.toFixed(millions < 10 ? 2 : 1)}M`;
+  }
+  if (tokens >= 1e3) return `${(tokens / 1e3).toFixed(1)}k`;
+  return String(tokens);
+}
+function buildTable(entries, totalsSpend, totals) {
+  const names = entries.map((e) => e.model);
+  const nameWidth = Math.max("Model".length, ...names.map((n) => n.length));
+  const spendWidth = Math.max(
+    "Spend".length,
+    ...entries.map((e) => (e.spend === null ? "-" : `$${e.spend.toFixed(4)}`).length),
+    `$${totalsSpend.toFixed(4)}`.length
+  );
+  const tokenWidth = Math.max(
+    "Tokens".length,
+    ...entries.map((e) => formatCompactTokens(e.totalTokens).length),
+    formatCompactTokens(totals.totalTokens ?? null).length
+  );
+  const reqWidth = Math.max(
+    "Reqs".length,
+    ...entries.map((e) => (e.apiRequests === null ? "-" : String(e.apiRequests)).length),
+    String(totals.totalApiRequests ?? 0).length
+  );
+  const renderRow = (model, spend, tokens, reqs) => `${model.padEnd(nameWidth)}  ${spend.padStart(spendWidth)}  ${tokens.padStart(tokenWidth)}  ${reqs.padStart(reqWidth)}`;
+  const lines = [];
+  const separator = "-".repeat(nameWidth + spendWidth + tokenWidth + reqWidth + 6);
+  lines.push(renderRow("Model", "Spend", "Tokens", "Reqs"));
+  lines.push(separator);
+  for (const entry of entries) {
+    lines.push(
+      renderRow(
+        entry.model,
+        entry.spend === null ? "-" : `$${entry.spend.toFixed(4)}`,
+        formatCompactTokens(entry.totalTokens),
+        entry.apiRequests === null ? "-" : String(entry.apiRequests)
+      )
+    );
+  }
+  if (entries.length > 0) {
+    lines.push(separator);
+    lines.push(
+      renderRow(
+        "Total",
+        `$${totalsSpend.toFixed(4)}`,
+        formatCompactTokens(totals.totalTokens ?? null),
+        String(totals.totalApiRequests ?? 0)
+      )
+    );
+  }
+  return lines;
+}
+function formatUsageTable(summary, options = {}) {
+  const lines = [];
+  const totalSpend = summary.totals.spend ?? 0;
+  const header = `Usage ${summary.startDate} \u2192 ${summary.endDate} (${rangeLengthDays(summary)} days): $${totalSpend.toFixed(4)}`;
+  lines.push(header);
+  if (summary.models.length === 0) {
+    lines.push("(no logged model usage in this range)");
+    return lines;
+  }
+  const topN = typeof options.topN === "number" && options.topN > 0 ? options.topN : void 0;
+  const rows = topN !== void 0 ? summary.models.slice(0, topN) : summary.models;
+  lines.push(...buildTable(rows, totalSpend, {
+    totalTokens: summary.totals.totalTokens,
+    totalApiRequests: summary.totals.apiRequests
+  }));
+  if (topN !== void 0 && summary.models.length > topN) {
+    lines.splice(lines.length - 1, 0, `(+${summary.models.length - topN} more models)`);
+  }
+  return lines;
+}
+
+// src/top-widget.ts
+var TOP_MODELS_ROW_LIMIT = 5;
+var TOP_MODELS_WINDOW_DAYS = 7;
+var TOP_WIDGET_WINDOW_LABEL = "7d";
+var TOP_MODELS_TTL_MS = 5 * 60 * 1e3;
+var WIDGET_SPEND_MIN_WIDTH = "$0.00".length;
+function computeTopModelRows(summary, publicIds) {
+  const display = applyModelAliases(
+    summary,
+    mapModelAliases(
+      summary.models.map((m) => m.model),
+      publicIds
+    )
+  );
+  return {
+    rows: display.models.slice(0, TOP_MODELS_ROW_LIMIT).map((m) => ({ model: m.model, spend: m.spend ?? 0 })),
+    totalSpend: display.totals.spend ?? 0
+  };
+}
+
+// src/top-command.ts
+function parseTopPrefArg(args, current) {
+  const trimmed = (args ?? "").trim().toLowerCase();
+  if (trimmed === "") {
+    const next = !current;
+    return { state: next ? "on" : "off", changed: true };
+  }
+  if (trimmed === "on" || trimmed === "off") {
+    const next = trimmed === "on";
+    return { state: next ? "on" : "off", changed: next !== current };
+  }
+  return { error: "expected nothing (toggle), `on`, or `off`" };
+}
+function formatTopToggleAnswer(parsed) {
+  return `Top-5 widget: ${parsed.state}${parsed.changed ? " (saved)" : " (already)"}`;
+}
+
+// src/usage-command.ts
+var RANGE_ARG_RE = /^(\d{4}-\d{2}-\d{2})\s+(?:to|→|\.\.|,)\s+(\d{4}-\d{2}-\d{2})$/;
+function parseUsageRangeArg(args, nowMs) {
+  const trimmed = (args ?? "").trim();
+  const now = typeof nowMs === "number" && Number.isFinite(nowMs) ? nowMs : Date.now();
+  const defaults = resolveDefaultUsageRange(now);
+  if (!trimmed) {
+    return { range: defaults, label: "last 30 days" };
+  }
+  if (/^\d+$/.test(trimmed)) {
+    const days = Math.max(1, parseInt(trimmed, 10));
+    const end = isoDay(now);
+    const start = isoDay(now - (days - 1) * 24 * 60 * 60 * 1e3);
+    return {
+      range: { startDate: start, endDate: end },
+      label: `last ${days} day${days === 1 ? "" : "s"}`
+    };
+  }
+  const rangeMatch = trimmed.match(RANGE_ARG_RE);
+  if (rangeMatch) {
+    const [, start, end] = rangeMatch;
+    if (Date.parse(`${start}T00:00:00Z`) > Date.parse(`${end}T00:00:00Z`)) {
+      return { error: `start date ${start} is after end date ${end}` };
+    }
+    return { range: { startDate: start, endDate: end }, label: `${start} \u2192 ${end}` };
+  }
+  return {
+    error: "expected nothing (last 30 days), a day count like `14`, or a range like `2025-03-01 .. 2025-03-31`"
+  };
+}
+
+// src/tools.ts
+import path6 from "path";
+import os6 from "os";
+import { rm as rm4 } from "fs/promises";
+var DEFAULT_PLUGIN_DIR_NAME4 = "actsis-litellm";
+var DEFAULT_APP_DIR_NAME4 = "opencode";
+var DEFAULT_TIMEOUT_MS = 3e4;
+var CACHE_FILE_NAME2 = "models-cache.json";
+function defaultPluginDir4() {
+  const dataHome = process.env.XDG_DATA_HOME ? process.env.XDG_DATA_HOME : path6.join(os6.homedir(), ".local", "share");
+  return path6.join(dataHome, DEFAULT_APP_DIR_NAME4, DEFAULT_PLUGIN_DIR_NAME4);
+}
 function cachePath2(dir) {
-  return path4.join(dir ?? defaultPluginDir3(), CACHE_FILE_NAME2);
+  return path6.join(dir ?? defaultPluginDir4(), CACHE_FILE_NAME2);
 }
 function formatExpiry(entry) {
   if (!entry) return "never";
@@ -1561,6 +2348,26 @@ function formatExpiry(entry) {
   return new Date(entry.expires).toISOString();
 }
 var EMPTY_INPUT = { type: "object", properties: {}, additionalProperties: false };
+var USAGE_INPUT = {
+  type: "object",
+  properties: {
+    args: {
+      type: "string",
+      description: "Optional usage window: a day count like 14, or a range like '2025-03-01 .. 2025-03-31'. Omit for the last 30 days."
+    }
+  },
+  additionalProperties: false
+};
+var TOP_INPUT = {
+  type: "object",
+  properties: {
+    args: {
+      type: "string",
+      description: "Optional action: 'on', 'off', or 'toggle'. Omit to toggle the current state."
+    }
+  },
+  additionalProperties: false
+};
 async function resolveToolToken(deps) {
   const {
     providerId,
@@ -1757,6 +2564,155 @@ function buildLitellmToolInfos(deps) {
     const removed = previousIds.filter((id) => !record[id]).length;
     return `Model catalog synced: ${currentIds.length} models available (added ${added}, removed ${removed}). Restart OpenCode to see new models in the picker.`;
   };
+  const credentialMetadata = async () => {
+    if (!deps.getCredential) return null;
+    try {
+      const cred = await deps.getCredential();
+      return cred ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const usage = async (args) => {
+    const parsed = parseUsageRangeArg(args);
+    if ("error" in parsed) {
+      return `Invalid window: ${parsed.error} \u2014 e.g. 14, or 2025-03-01 .. 2025-03-31; omit the argument for the last 30 days.`;
+    }
+    const state = await readPluginState(stateDir);
+    const entry = await readEntry(deps);
+    if (!entry) {
+      return "Not signed in \u2014 run /login and choose ACTSIS LiteLLM.";
+    }
+    if (!state?.gatewayUrl) {
+      return "Gateway URL not configured.";
+    }
+    try {
+      const token = entry.type === "oauth" ? await ensureFreshToken(
+        { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+        {
+          state,
+          timeoutMs: timeout,
+          fetchImpl,
+          onRefreshed
+        }
+      ) : entry.key;
+      const userId = extractCredentialUserId(await credentialMetadata()) ?? void 0;
+      const summary = await fetchModelUsage(
+        state.gatewayUrl,
+        token,
+        timeout,
+        parsed.range,
+        { userId },
+        fetchImpl
+      );
+      const cached = await loadCachedModels(stateDir);
+      const publicIds = cached ? Object.keys(cached) : [];
+      const display = applyModelAliases(
+        summary,
+        mapModelAliases(
+          summary.models.map((m) => m.model),
+          publicIds
+        )
+      );
+      const lines = [`Usage (${parsed.label}):`, ...formatUsageTable(display)];
+      try {
+        const gateway = await fetchGatewayRequests(
+          state.gatewayUrl,
+          token,
+          timeout,
+          parsed.range,
+          { userId },
+          fetchImpl
+        );
+        if (gateway) {
+          lines.push(
+            `Gateway requests: ${gateway.total.toLocaleString("en-US")} (successful ${gateway.successful.toLocaleString("en-US")} \xB7 failed ${gateway.failed.toLocaleString("en-US")}) \u2014 includes non-logged traffic`
+          );
+        }
+      } catch {
+      }
+      return lines.join("\n");
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return err.message;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      return `Usage unavailable: ${reason}`;
+    }
+  };
+  const top = async (args) => {
+    const enabled = await readTopModelsWidgetEnabled(stateDir);
+    const parsed = parseTopPrefArg(args, enabled);
+    if ("error" in parsed) {
+      return `Invalid argument: ${parsed.error} \u2014 pass on, off, toggle, or omit args to toggle. Top-5 widget state unchanged.`;
+    }
+    if (parsed.changed) {
+      await updateTopModelsWidgetEnabled(parsed.state === "on", stateDir);
+    }
+    if (parsed.state === "off") {
+      const state2 = await readPluginState(stateDir);
+      if (state2?.lastTopModels?.length) {
+        await updatePluginState(
+          { lastTopModels: [], topRefreshedAt: void 0 },
+          stateDir
+        );
+      }
+      return `${formatTopToggleAnswer(parsed)}. Widget rows cleared; gateway queries stopped.`;
+    }
+    const state = await readPluginState(stateDir);
+    const entry = await readEntry(deps);
+    if (!state?.gatewayUrl || !entry) {
+      return `${formatTopToggleAnswer(parsed)}. Widget rows unavailable: no gateway URL or credentials.`;
+    }
+    try {
+      const token = entry.type === "oauth" ? await ensureFreshToken(
+        { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+        {
+          state,
+          timeoutMs: timeout,
+          fetchImpl,
+          onRefreshed
+        }
+      ) : entry.key;
+      const userId = extractCredentialUserId(await credentialMetadata()) ?? void 0;
+      const summary = await fetchModelUsage(
+        state.gatewayUrl,
+        token,
+        timeout,
+        resolveUsageRangeDays(TOP_MODELS_WINDOW_DAYS),
+        { userId },
+        fetchImpl
+      );
+      if (summary.models.length === 0 || (summary.totals.spend ?? 0) <= 0) {
+        await updatePluginState(
+          { lastTopModels: [], topRefreshedAt: void 0 },
+          stateDir
+        );
+        return `${formatTopToggleAnswer(parsed)}. No logged spend in the last ${TOP_MODELS_WINDOW_DAYS} days to show.`;
+      }
+      const cached = await loadCachedModels(stateDir);
+      const { rows, totalSpend } = computeTopModelRows(
+        summary,
+        cached ? Object.keys(cached) : []
+      );
+      await updatePluginState(
+        {
+          lastTopModels: rows.slice(0, TOP_MODELS_ROW_LIMIT),
+          topRefreshedAt: Date.now(),
+          topWindowLabel: TOP_WIDGET_WINDOW_LABEL,
+          topTotalSpend: totalSpend
+        },
+        stateDir
+      );
+      return `${formatTopToggleAnswer(parsed)}. Top-5 rows refreshed (last ${TOP_MODELS_WINDOW_DAYS} days).`;
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return `${formatTopToggleAnswer(parsed)}. Widget rows unavailable: ${err.message}`;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      return `${formatTopToggleAnswer(parsed)}. Widget rows unavailable: ${reason}`;
+    }
+  };
   const logout = async () => {
     const state = await readPluginState(stateDir);
     const entry = await readEntry(deps);
@@ -1777,7 +2733,7 @@ function buildLitellmToolInfos(deps) {
     await clearAuthEntry(authPath, providerId);
     await writePluginState({ version: 1 }, stateDir);
     try {
-      await rm3(cachePath2(stateDir), { force: true });
+      await rm4(cachePath2(stateDir), { force: true });
     } catch {
     }
     return [
@@ -1811,6 +2767,24 @@ function buildLitellmToolInfos(deps) {
       }
     },
     {
+      name: "actsis_litellm_usage",
+      description: "Show per-model usage from the LiteLLM gateway (spend, tokens, requests) for a window; supports day counts and explicit date ranges.",
+      input: USAGE_INPUT,
+      async execute(input) {
+        const args = typeof input.args === "string" ? input.args : void 0;
+        return { content: await usage(args) };
+      }
+    },
+    {
+      name: "actsis_litellm_top",
+      description: "Enable, disable, or toggle the Top-5 spend models TUI widget; persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows.",
+      input: TOP_INPUT,
+      async execute(input) {
+        const args = typeof input.args === "string" ? input.args : void 0;
+        return { content: await top(args) };
+      }
+    },
+    {
       name: "actsis_litellm_logout",
       description: "Revoke LiteLLM credentials and clear local state.",
       input: EMPTY_INPUT,
@@ -1827,6 +2801,21 @@ var DEFAULT_CATALOG_TTL_MS2 = 15 * 60 * 1e3;
 var DEFAULT_REQUEST_TIMEOUT_MS = 3e4;
 var DEFAULT_PROVIDER_NAME = "Actsis LiteLLM";
 var OPENAI_COMPATIBLE_PACKAGE = "@opencode/ai/providers/openai-compatible";
+var TLS_BOOTSTRAP_ONCE_KEY = "actsis-litellm-plugin";
+async function runTlsBootstrapOnce() {
+  try {
+    const outcome = await configureSystemCa({
+      onceKey: TLS_BOOTSTRAP_ONCE_KEY,
+      optOutEnv: process.env.ACTSIS_LITELLM_NO_SYSTEM_CA
+    });
+    if (outcome.kind === "failed" && outcome.reason) {
+      console.warn(
+        `[actsis-litellm] TLS system-CA bootstrap skipped: ${outcome.reason}`
+      );
+    }
+  } catch {
+  }
+}
 function makeCredentialReader(ctx, providerId) {
   return async () => {
     const conn = await ctx.integration.connection.active(providerId);
@@ -1955,6 +2944,16 @@ function buildCommandDefinitions(existing) {
       template: "Use the actsis_litellm_budget tool, then summarize its result for the user."
     },
     {
+      name: "actsis-litellm-usage",
+      description: "Show per-model usage (spend/tokens/requests); args: [days] or 'YYYY-MM-DD .. YYYY-MM-DD'",
+      template: "Use the actsis_litellm_usage tool, passing any window argument the user gave (a day count like 14, or a range like 2025-03-01 .. 2025-03-31) as its args input; omit args for the default last 30 days. Then summarize its result for the user."
+    },
+    {
+      name: "actsis-litellm-top",
+      description: "Enable, disable or toggle the Top-5 spend widget (args: on | off | toggle; omit to toggle).",
+      template: "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then summarize its result for the user."
+    },
+    {
       name: "actsis-litellm-logout",
       description: "Revoke LiteLLM credentials and clear local state.",
       template: "Use the actsis_litellm_logout tool, then summarize its result for the user."
@@ -2049,7 +3048,7 @@ function buildAuthMethodRegistrations(closure) {
     method: {
       id: OAUTH_METHOD_ID,
       type: "oauth",
-      label: "Sign in with SSO (browser)",
+      label: "Sign in with OAuth (browser)",
       form: [gatewayUrlField()]
     },
     async authorize(answer) {
@@ -2154,6 +3153,78 @@ async function runBudgetRefresh(closure, getCredential) {
     );
   } catch {
   }
+  try {
+    await runTopModelsRefresh(closure, getCredential);
+  } catch {
+  }
+}
+async function runTopModelsRefresh(closure, getCredential) {
+  const enabled = await readTopModelsWidgetEnabled(closure.stateDir);
+  if (!enabled) {
+    const state2 = await readPluginState(closure.stateDir);
+    if (state2?.lastTopModels?.length) {
+      await updatePluginState(
+        { lastTopModels: [], topRefreshedAt: void 0 },
+        closure.stateDir
+      );
+    }
+    return;
+  }
+  const state = await readPluginState(closure.stateDir);
+  if (!state?.gatewayUrl) return;
+  const entry = await credentialEntry(closure, getCredential);
+  if (!entry) return;
+  const now = Date.now();
+  if (typeof state.topRefreshedAt === "number" && Number.isFinite(state.topRefreshedAt) && now - state.topRefreshedAt < TOP_MODELS_TTL_MS) {
+    return;
+  }
+  const token = entry.type === "oauth" ? await ensureFreshToken(
+    { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+    {
+      state,
+      timeoutMs: closure.requestTimeoutMs
+    }
+  ) : entry.key;
+  let userId;
+  if (getCredential) {
+    try {
+      userId = extractCredentialUserId(await getCredential()) ?? void 0;
+    } catch {
+      userId = void 0;
+    }
+  }
+  const summary = await fetchModelUsage(
+    state.gatewayUrl,
+    token,
+    closure.requestTimeoutMs,
+    resolveUsageRangeDays(TOP_MODELS_WINDOW_DAYS, now),
+    { userId }
+  );
+  if (summary.models.length === 0 || (summary.totals.spend ?? 0) <= 0) {
+    await updatePluginState(
+      { lastTopModels: [], topRefreshedAt: void 0 },
+      closure.stateDir
+    );
+    return;
+  }
+  const cached = await loadCachedModels(closure.stateDir);
+  const publicIds = cached ? Object.keys(cached) : [];
+  const aliased = applyModelAliases(
+    summary,
+    mapModelAliases(
+      summary.models.map((m) => m.model),
+      publicIds
+    )
+  );
+  await updatePluginState(
+    {
+      lastTopModels: aliased.models.slice(0, TOP_MODELS_ROW_LIMIT).map((m) => ({ model: m.model, spend: m.spend ?? 0 })),
+      topRefreshedAt: now,
+      topWindowLabel: TOP_WIDGET_WINDOW_LABEL,
+      topTotalSpend: aliased.totals.spend ?? 0
+    },
+    closure.stateDir
+  );
 }
 async function credentialEntry(closure, getCredential) {
   if (getCredential) {
@@ -2224,6 +3295,7 @@ var plugin_default = Plugin.define({
       resolveStateDir()
     );
     const getCredential = makeCredentialReader(context, closure.providerId);
+    await runTlsBootstrapOnce();
     await context.integration.transform((editor) => {
       const { oauth, apiKey } = buildAuthMethodRegistrations(closure);
       editor.method.update(oauth);
@@ -2313,7 +3385,7 @@ var plugin_default = Plugin.define({
     const eventLoop = (async () => {
       try {
         for await (const event of context.event.subscribe({ signal: controller.signal })) {
-          if (event.type !== "session.idle") continue;
+          if (!isWidgetRefreshTrigger(String(event.type))) continue;
           try {
             await runBudgetRefresh(closure, getCredential);
           } catch {

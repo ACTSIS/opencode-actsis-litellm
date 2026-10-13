@@ -322,18 +322,22 @@ describe("mapModelConfigToInfo", () => {
 });
 
 describe("buildCommandDefinitions", () => {
-  it("exposes all four commands in v2 shape (name/description/template)", () => {
+  it("exposes all six commands in v2 shape (name/description/template)", () => {
     const commands = buildCommandDefinitions();
     expect(commands.map((c) => c.name)).toEqual([
       "actsis-litellm-status",
       "actsis-litellm-models",
       "actsis-litellm-budget",
+      "actsis-litellm-usage",
+      "actsis-litellm-top",
       "actsis-litellm-logout",
     ]);
     expect(commands[0].template).toContain("actsis_litellm_status tool");
     expect(commands[1].description).toContain("Force-sync");
     expect(commands[2].template).toContain("actsis_litellm_budget tool");
-    expect(commands[3].description).toContain("Revoke");
+    expect(commands[3].template).toContain("actsis_litellm_usage tool");
+    expect(commands[4].template).toContain("actsis_litellm_top tool");
+    expect(commands[5].description).toContain("Revoke");
   });
 });
 
@@ -470,7 +474,7 @@ describe("OAuth method registration", () => {
 
     const method = registration.method as Record<string, unknown>;
     expect(method.type).toBe("oauth");
-    expect(method.label).toBe("Sign in with SSO (browser)");
+    expect(method.label).toBe("Sign in with OAuth (browser)");
     const form = method.form as Array<Record<string, unknown>>;
     expect(form[0].key).toBe("gatewayUrl");
   });
@@ -776,6 +780,8 @@ describe("server plugin (v2 wiring)", () => {
       "actsis_litellm_status",
       "actsis_litellm_budget",
       "actsis_litellm_models",
+      "actsis_litellm_usage",
+      "actsis_litellm_top",
       "actsis_litellm_logout",
     ]) {
       expect(toolNames).toContain(name);
@@ -785,6 +791,8 @@ describe("server plugin (v2 wiring)", () => {
       "actsis-litellm-status",
       "actsis-litellm-models",
       "actsis-litellm-budget",
+      "actsis-litellm-usage",
+      "actsis-litellm-top",
       "actsis-litellm-logout",
     ]);
 
@@ -875,6 +883,45 @@ describe("server plugin (v2 wiring)", () => {
     expect(state?.budgetRefreshedAt).toEqual(expect.any(Number));
     vi.unstubAllGlobals();
   });
+
+  it("a session.execution.succeeded event triggers a budget refresh", async () => {
+    await writePluginState(
+      { version: 1, gatewayUrl: "https://gw.example.com", providerId: "actsis-litellm" },
+      tmpDir,
+    );
+    await mkdir(path.dirname(defaultAuthPath()), { recursive: true });
+    await writeFile(
+      defaultAuthPath(),
+      JSON.stringify({ "actsis-litellm": { type: "api", key: "sk-test" } }),
+    );
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: 4.56, max_budget: 100 }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }));
+
+    // Event stream that emits one session.execution.succeeded then closes.
+    const { ctx } = makeFakeContext();
+    const execEvent = { type: "session.execution.succeeded", data: { sessionID: "s1" } } as unknown;
+    (ctx.event as unknown as { subscribe: () => AsyncIterable<unknown> }).subscribe = () =>
+      (async function* () {
+        yield execEvent;
+      })();
+    const setup = await serverPlugin.setup(ctx as never);
+
+    // Allow the detached event loop to process the event.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await setup?.();
+
+    const state = await readPluginState(tmpDir);
+    expect(state?.lastBudgetSnapshot?.primary.spend).toBe(4.56);
+    expect(state?.budgetRefreshedAt).toEqual(expect.any(Number));
+    vi.unstubAllGlobals();
+  });
 });
 describe("triangulation: alternate v2 wiring cases", () => {
   const savedEnv: { url?: string; stateDir?: string; dataHome?: string } = {};
@@ -938,6 +985,8 @@ describe("triangulation: alternate v2 wiring cases", () => {
     expect(commands.map((c) => c.name)).toEqual([
       "actsis-litellm-models",
       "actsis-litellm-budget",
+      "actsis-litellm-usage",
+      "actsis-litellm-top",
       "actsis-litellm-logout",
     ]);
   });

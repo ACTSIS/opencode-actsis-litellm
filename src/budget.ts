@@ -1,4 +1,5 @@
 import { AuthError, CatalogError } from "./errors.ts";
+import { fetchFailureMessage } from "./network-error.ts";
 
 export interface BudgetInfo {
   spend: number | null;
@@ -88,7 +89,7 @@ async function requestJson(
     });
   } catch (err) {
     throw new CatalogError(
-      `Failed to fetch ${label}: ${err instanceof Error ? err.message : String(err)}`,
+      `Failed to fetch ${label}: ${fetchFailureMessage(err)}`,
       { cause: err },
     );
   }

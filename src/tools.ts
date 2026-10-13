@@ -7,6 +7,24 @@ import {
 } from "./catalog-cache.ts";
 import { fetchCatalogModels } from "./catalog.ts";
 import { fetchGatewayBudget, formatBudgetLine, formatBudgetStatus } from "./budget.ts";
+import {
+  applyModelAliases,
+  extractCredentialUserId,
+  fetchGatewayRequests,
+  fetchModelUsage,
+  formatUsageTable,
+  mapModelAliases,
+} from "./usage.ts";
+import { resolveUsageRangeDays } from "./usage.ts";
+import { parseTopPrefArg, formatTopToggleAnswer } from "./top-command.ts";
+import { readTopModelsWidgetEnabled, updateTopModelsWidgetEnabled } from "./preferences.ts";
+import {
+  TOP_MODELS_ROW_LIMIT,
+  TOP_MODELS_WINDOW_DAYS,
+  TOP_WIDGET_WINDOW_LABEL,
+  computeTopModelRows,
+} from "./top-widget.ts";
+import { parseUsageRangeArg } from "./usage-command.ts";
 import { readAuthEntry, clearAuthEntry, defaultAuthPath, type AuthJsonEntry } from "./auth-store.ts";
 import { revokeToken, type CliAuthDiscovery } from "./client.ts";
 import { AuthError } from "./errors.ts";
@@ -51,6 +69,8 @@ export interface StructuralCredential {
   access?: string;
   expires?: number;
   key?: string;
+  /** Gateway-facing metadata (e.g. userId persisted at login time). */
+  metadata?: Record<string, unknown>;
 }
 
 export interface ToolDeps {
@@ -81,11 +101,35 @@ export interface ToolDeps {
 export interface ToolInfo {
   name: string;
   description: string;
-  input: { type: "object"; properties: Record<string, never>; additionalProperties: false };
+  input: { type: "object"; properties: Record<string, unknown>; additionalProperties: false };
   execute: (input: Record<string, unknown>, context: unknown) => Promise<{ content: string }>;
 }
 
 const EMPTY_INPUT = { type: "object" as const, properties: {}, additionalProperties: false as const };
+
+const USAGE_INPUT = {
+  type: "object" as const,
+  properties: {
+    args: {
+      type: "string" as const,
+      description:
+        "Optional usage window: a day count like 14, or a range like '2025-03-01 .. 2025-03-31'. Omit for the last 30 days.",
+    },
+  },
+  additionalProperties: false as const,
+};
+
+const TOP_INPUT = {
+  type: "object" as const,
+  properties: {
+    args: {
+      type: "string" as const,
+      description:
+        "Optional action: 'on', 'off', or 'toggle'. Omit to toggle the current state.",
+    },
+  },
+  additionalProperties: false as const,
+};
 
 /**
  * Resolve the gateway state and a bearer token for tool requests.
@@ -335,6 +379,186 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     return `Model catalog synced: ${currentIds.length} models available (added ${added}, removed ${removed}). Restart OpenCode to see new models in the picker.`;
   };
 
+  /**
+   * Best-effort credential metadata read (gateway-facing userId, persisted
+   * at login time). The v1 auth.json fallback carries no metadata, so a
+   * reader failure simply means the usage query is not user-scoped.
+   */
+  const credentialMetadata = async (): Promise<{ metadata?: Record<string, unknown> } | null> => {
+    if (!deps.getCredential) return null;
+    try {
+      const cred = await deps.getCredential();
+      return cred ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const usage = async (args?: string): Promise<string> => {
+    const parsed = parseUsageRangeArg(args);
+    if ("error" in parsed) {
+      return `Invalid window: ${parsed.error} — e.g. 14, or 2025-03-01 .. 2025-03-31; omit the argument for the last 30 days.`;
+    }
+
+    const state = await readPluginState(stateDir);
+    const entry = await readEntry(deps);
+    if (!entry) {
+      return "Not signed in — run /login and choose ACTSIS LiteLLM.";
+    }
+    if (!state?.gatewayUrl) {
+      return "Gateway URL not configured.";
+    }
+
+    try {
+      const token = entry.type === "oauth"
+        ? await ensureFreshToken(
+          { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+          {
+            state,
+            timeoutMs: timeout,
+            fetchImpl,
+            onRefreshed,
+          },
+        )
+        : entry.key;
+      const userId = extractCredentialUserId(await credentialMetadata()) ?? undefined;
+      const summary = await fetchModelUsage(
+        state.gatewayUrl,
+        token,
+        timeout,
+        parsed.range,
+        { userId },
+        fetchImpl,
+      );
+      // Present public model names (what the user sees in the model picker)
+      // instead of LiteLLM's internal deployment names from the spend logs.
+      const cached = await loadCachedModels(stateDir);
+      const publicIds = cached ? Object.keys(cached) : [];
+      const display = applyModelAliases(
+        summary,
+        mapModelAliases(
+          summary.models.map((m) => m.model),
+          publicIds,
+        ),
+      );
+      const lines = [`Usage (${parsed.label}):`, ...formatUsageTable(display)];
+      // The dashboard's Total Requests card counts gateway-answered requests
+      // (includes non-logged traffic, e.g. audio); surface it as a best-effort
+      // footnote so numbers reconcile with the dashboard.
+      try {
+        const gateway = await fetchGatewayRequests(
+          state.gatewayUrl,
+          token,
+          timeout,
+          parsed.range,
+          { userId },
+          fetchImpl,
+        );
+        if (gateway) {
+          lines.push(
+            `Gateway requests: ${gateway.total.toLocaleString("en-US")} (successful ${gateway.successful.toLocaleString("en-US")} · failed ${gateway.failed.toLocaleString("en-US")}) — includes non-logged traffic`,
+          );
+        }
+      } catch {
+        // Footnote is best-effort.
+      }
+      return lines.join("\n");
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return err.message;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      return `Usage unavailable: ${reason}`;
+    }
+  };
+
+  /**
+   * Toggle the Top-5 spend widget: persists the on/off preference (plugin-owned
+   * preferences.json) and immediately clears or refetches the persisted rows
+   * so the TUI widget and its gateway behavior reflect the change right away.
+   */
+  const top = async (args?: string): Promise<string> => {
+    const enabled = await readTopModelsWidgetEnabled(stateDir);
+    const parsed = parseTopPrefArg(args, enabled);
+    if ("error" in parsed) {
+      return `Invalid argument: ${parsed.error} — pass on, off, toggle, or omit args to toggle. Top-5 widget state unchanged.`;
+    }
+    if (parsed.changed) {
+      await updateTopModelsWidgetEnabled(parsed.state === "on", stateDir);
+    }
+
+    if (parsed.state === "off") {
+      // Disabled: clear the persisted rows and stop gateway queries.
+      const state = await readPluginState(stateDir);
+      if (state?.lastTopModels?.length) {
+        await updatePluginState(
+          { lastTopModels: [], topRefreshedAt: undefined },
+          stateDir,
+        );
+      }
+      return `${formatTopToggleAnswer(parsed)}. Widget rows cleared; gateway queries stopped.`;
+    }
+
+    // Enabled (new or already): refresh rows right away (force, like pi's
+    // command wrapper). The refresh is best-effort: a gateway failure still
+    // reports the toggle outcome.
+    const state = await readPluginState(stateDir);
+    const entry = await readEntry(deps);
+    if (!state?.gatewayUrl || !entry) {
+      return `${formatTopToggleAnswer(parsed)}. Widget rows unavailable: no gateway URL or credentials.`;
+    }
+    try {
+      const token = entry.type === "oauth"
+        ? await ensureFreshToken(
+          { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+          {
+            state,
+            timeoutMs: timeout,
+            fetchImpl,
+            onRefreshed,
+          },
+        )
+        : entry.key;
+      const userId = extractCredentialUserId(await credentialMetadata()) ?? undefined;
+      const summary = await fetchModelUsage(
+        state.gatewayUrl,
+        token,
+        timeout,
+        resolveUsageRangeDays(TOP_MODELS_WINDOW_DAYS),
+        { userId },
+        fetchImpl,
+      );
+      if (summary.models.length === 0 || (summary.totals.spend ?? 0) <= 0) {
+        await updatePluginState(
+          { lastTopModels: [], topRefreshedAt: undefined },
+          stateDir,
+        );
+        return `${formatTopToggleAnswer(parsed)}. No logged spend in the last ${TOP_MODELS_WINDOW_DAYS} days to show.`;
+      }
+      const cached = await loadCachedModels(stateDir);
+      const { rows, totalSpend } = computeTopModelRows(
+        summary,
+        cached ? Object.keys(cached) : [],
+      );
+      await updatePluginState(
+        {
+          lastTopModels: rows.slice(0, TOP_MODELS_ROW_LIMIT),
+          topRefreshedAt: Date.now(),
+          topWindowLabel: TOP_WIDGET_WINDOW_LABEL,
+          topTotalSpend: totalSpend,
+        },
+        stateDir,
+      );
+      return `${formatTopToggleAnswer(parsed)}. Top-5 rows refreshed (last ${TOP_MODELS_WINDOW_DAYS} days).`;
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return `${formatTopToggleAnswer(parsed)}. Widget rows unavailable: ${err.message}`;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      return `${formatTopToggleAnswer(parsed)}. Widget rows unavailable: ${reason}`;
+    }
+  };
+
   const logout = async (): Promise<string> => {
     const state = await readPluginState(stateDir);
     const entry = await readEntry(deps);
@@ -393,6 +617,26 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
       input: EMPTY_INPUT,
       async execute() {
         return { content: await models() };
+      },
+    },
+    {
+      name: "actsis_litellm_usage",
+      description:
+        "Show per-model usage from the LiteLLM gateway (spend, tokens, requests) for a window; supports day counts and explicit date ranges.",
+      input: USAGE_INPUT,
+      async execute(input) {
+        const args = typeof input.args === "string" ? input.args : undefined;
+        return { content: await usage(args) };
+      },
+    },
+    {
+      name: "actsis_litellm_top",
+      description:
+        "Enable, disable, or toggle the Top-5 spend models TUI widget; persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows.",
+      input: TOP_INPUT,
+      async execute(input) {
+        const args = typeof input.args === "string" ? input.args : undefined;
+        return { content: await top(args) };
       },
     },
     {
