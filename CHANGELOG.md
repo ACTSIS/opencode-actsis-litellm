@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.1 — 2026-10-13 — Corrección del disparador de refresco del widget Budget
+
+### Corregido
+
+- **El widget de Budget quedaba congelado en un valor viejo** mientras los
+  comandos mostraban el valor fresco: OpenCode v2 ya no emite el evento
+  `session.idle` (deprecado en el schema v2; su ciclo de vida real usa
+  `session.execution.succeeded/failed/interrupted`), y los disparadores de
+  refresco del widget (loop del plugin y hook del TUI) filtraban exactamente
+  por `session.idle` — nunca disparaban. El snapshot persistido en
+  `state.json` era correcto todo el tiempo; el widget solo re-leía al
+  arrancar. Ahora los dos lados se disparan con los eventos de ejecución
+  (manteniendo `session.idle` por compatibilidad) y el TUI añade un poll de
+  seguridad cada 60 s sobre el estado persistido.
+
 ## 0.3.0 — 2026-10-09 — Paridad con pi-actsis-litellm (uso, Top-5, TLS, OAuth)
 
 ### Agregado

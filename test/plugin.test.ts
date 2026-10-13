@@ -883,6 +883,45 @@ describe("server plugin (v2 wiring)", () => {
     expect(state?.budgetRefreshedAt).toEqual(expect.any(Number));
     vi.unstubAllGlobals();
   });
+
+  it("a session.execution.succeeded event triggers a budget refresh", async () => {
+    await writePluginState(
+      { version: 1, gatewayUrl: "https://gw.example.com", providerId: "actsis-litellm" },
+      tmpDir,
+    );
+    await mkdir(path.dirname(defaultAuthPath()), { recursive: true });
+    await writeFile(
+      defaultAuthPath(),
+      JSON.stringify({ "actsis-litellm": { type: "api", key: "sk-test" } }),
+    );
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: 4.56, max_budget: 100 }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    }));
+
+    // Event stream that emits one session.execution.succeeded then closes.
+    const { ctx } = makeFakeContext();
+    const execEvent = { type: "session.execution.succeeded", data: { sessionID: "s1" } } as unknown;
+    (ctx.event as unknown as { subscribe: () => AsyncIterable<unknown> }).subscribe = () =>
+      (async function* () {
+        yield execEvent;
+      })();
+    const setup = await serverPlugin.setup(ctx as never);
+
+    // Allow the detached event loop to process the event.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await setup?.();
+
+    const state = await readPluginState(tmpDir);
+    expect(state?.lastBudgetSnapshot?.primary.spend).toBe(4.56);
+    expect(state?.budgetRefreshedAt).toEqual(expect.any(Number));
+    vi.unstubAllGlobals();
+  });
 });
 describe("triangulation: alternate v2 wiring cases", () => {
   const savedEnv: { url?: string; stateDir?: string; dataHome?: string } = {};

@@ -1644,6 +1644,20 @@ function isOverflowErrorMessage(message) {
   return LITELLM_OVERFLOW_PATTERN.test(message);
 }
 
+// src/widget-events.ts
+var WIDGET_REFRESH_EVENT_TYPES = [
+  "session.idle",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted"
+];
+var WIDGET_REFRESH_TRIGGER_SET = new Set(
+  WIDGET_REFRESH_EVENT_TYPES
+);
+function isWidgetRefreshTrigger(type) {
+  return WIDGET_REFRESH_TRIGGER_SET.has(type);
+}
+
 // src/auth-store.ts
 import { access, readFile as readFile3, writeFile as writeFile3 } from "fs/promises";
 import os3 from "os";
@@ -3371,7 +3385,7 @@ var plugin_default = Plugin.define({
     const eventLoop = (async () => {
       try {
         for await (const event of context.event.subscribe({ signal: controller.signal })) {
-          if (event.type !== "session.idle") continue;
+          if (!isWidgetRefreshTrigger(String(event.type))) continue;
           try {
             await runBudgetRefresh(closure, getCredential);
           } catch {

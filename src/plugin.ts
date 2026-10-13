@@ -15,6 +15,7 @@ import {
 import { fetchCatalogModels } from "./catalog.ts";
 import { parseLimitError, formatBudgetWarning, formatThrottleWarning } from "./limit-errors.ts";
 import { isOverflowErrorMessage } from "./overflow.ts";
+import { isWidgetRefreshTrigger } from "./widget-events.ts";
 import { readAuthEntry, defaultAuthPath, type AuthJsonEntry } from "./auth-store.ts";
 import type { StructuralCredential } from "./tools.ts";
 import { normalizeBaseUrl, type PluginOptions } from "./config.ts";
@@ -922,12 +923,12 @@ export default Plugin.define({
       { providerID: closure.providerId },
     );
 
-    // --- session.idle budget refresh loop ---
+    // --- widget refresh event loop ---
     const controller = new AbortController();
     const eventLoop = (async () => {
       try {
         for await (const event of context.event.subscribe({ signal: controller.signal })) {
-          if (event.type !== "session.idle") continue;
+          if (!isWidgetRefreshTrigger(String(event.type))) continue;
           try {
             await runBudgetRefresh(closure, getCredential);
           } catch {

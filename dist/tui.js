@@ -229,6 +229,17 @@ function readTopModelsWidgetEnabled(dir) {
   return readPreferences(dir).then((prefs) => prefs.topModelsWidget);
 }
 
+// src/widget-events.ts
+var WIDGET_REFRESH_EVENT_TYPES = [
+  "session.idle",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted"
+];
+var WIDGET_REFRESH_TRIGGER_SET = new Set(
+  WIDGET_REFRESH_EVENT_TYPES
+);
+
 // src/tui.tsx
 var IDLE_REFRESH_DEBOUNCE_MS = 2e3;
 var tui_default = Plugin.define({
@@ -278,14 +289,16 @@ var tui_default = Plugin.define({
         })() : null;
       }
     });
-    const unsubIdle = context.data.on("session.idle", () => {
+    const unsubscribers = WIDGET_REFRESH_EVENT_TYPES.map((type) => context.data.on(type, () => {
       if (timeout !== void 0) clearTimeout(timeout);
       timeout = setTimeout(() => void refresh(), IDLE_REFRESH_DEBOUNCE_MS);
-    });
+    }));
     void refresh();
+    const pollTimer = setInterval(() => void refresh(), 6e4);
     return () => {
-      unsubIdle();
+      for (const unsub of unsubscribers) unsub();
       if (timeout !== void 0) clearTimeout(timeout);
+      clearInterval(pollTimer);
     };
   }
 });
