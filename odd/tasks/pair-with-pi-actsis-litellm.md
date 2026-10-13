@@ -74,6 +74,13 @@ Commits, one work-unit commit per task; tests-first where runnable.
   gateway paths. Tests mirror test/network-error.test.ts.
   Commit fix(errors).
 
+### P10. (bugfix, post-delivery) Budget/widget refresh triggers — session.idle never fires in opencode v2 — DONE
+- Evidence: commit 16f649c (fix(widget), v0.3.1, dist rebuilt, CHANGELOG entry); src/widget-events.ts shared trigger list (+ TUI 60s poll safety net); test/widget-events.test.ts + extended plugin event-loop test; suite 413/413; worker task mv6q86dw-8-wvl8; pushed to PR #6.
+- Symptom: /actsis-litellm:budget (fresh fetch via tool) shows $477.43/80% while the TUI widget stays frozen at an older $336.96/56%.
+- Root cause (verified): opencode v2.0.25 turns emit session.execution.succeeded/failed/interrupted; session.idle is deprecated in the schema and NOT emitted (source sst/opencode dev: schema/src/session-status-event.ts marks it deprecated; core publishes only SessionEvent.Execution.*; empirical probe on a local v2.0.25 serve captured session.execution.* but zero session.idle/session.status events).
+- Our server loop (src/plugin.ts ~930) and TUI hook (src/tui.tsx) filter exactly "session.idle" → both never fire → widget only shows the TUI-setup-time snapshot.
+- Fix plan: shared trigger-list helper (src/widget-events.ts) with session.idle + session.execution.{succeeded,failed,interrupted}; plugin loop and TUI data.on use it; TUI adds a 60s polling safety net on state.json re-read.
+
 ### P9. Docs + version bump + E2E gateway verification
 - Docs DONE: commits 98d25f5 (docs) + f8a6add (chore(release) 0.3.0 + dist rebuild via npm run bundle); README sections Uso por modelo / Filas Top-5 / TLS con una CA privada; CHANGELOG 0.3.0 entry; suite 409/409; typecheck clean; worker task mv1i5nfu-6-54wh.
 - E2E: parent-owned, below.
