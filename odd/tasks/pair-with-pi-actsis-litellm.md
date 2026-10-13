@@ -82,6 +82,10 @@ Commits, one work-unit commit per task; tests-first where runnable.
 - Fix plan: shared trigger-list helper (src/widget-events.ts) with session.idle + session.execution.{succeeded,failed,interrupted}; plugin loop and TUI data.on use it; TUI adds a 60s polling safety net on state.json re-read.
 
 ### P9. Docs + version bump + E2E gateway verification
+- Docs DONE: commits 98d25f5 + f8a6add; suite 409/409; worker mv1i5nfu-6-54wh. E2E live blocked on expired credential (see P11 for renewed credential state).
+### P11. (post-delivery) Top widget invisible in OpenCode — confirmed root cause
+- Preference `topModelsWidget` was persisting as false on the user's machine (saved 08:17 via `top off`) AND the P10 root cause (session.idle never emitted) meant runTopModelsRefresh never ran, so no rows were ever persisted. In pi, the sibling extension has its own preference + working triggers, so it looked correct.
+- Verification: live harness with the local stored credential ran runTopModelsRefresh + topWidgetLines through the P10 code — 5 public rows persisted (window 7d), rendering correct; preference re-enabled to true per user intent. No code change required on top of P10; user action = restart OpenCode TUI.
 - Docs DONE: commits 98d25f5 (docs) + f8a6add (chore(release) 0.3.0 + dist rebuild via npm run bundle); README sections Uso por modelo / Filas Top-5 / TLS con una CA privada; CHANGELOG 0.3.0 entry; suite 409/409; typecheck clean; worker task mv1i5nfu-6-54wh.
 - E2E: parent-owned, below.
 - README (usage command, top widget, TLS notes, rename),
