@@ -1,6 +1,10 @@
 # Changelog
 
-## 0.3.1 — 2026-10-13 — Corrección del disparador de refresco del widget Budget
+## 0.4.0 — 2026-10-13 — Primera versión compartida con pi-actsis-litellm
+
+Números de release emparejados con la extensión hermana `pi-actsis-litellm`
+(que salta de su 0.1.0 sin publicar a 0.4.0 con todo el ciclo de paridad);
+de aquí en adelante ambos suben en tandom.
 
 ### Corregido
 
