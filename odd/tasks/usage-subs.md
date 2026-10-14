@@ -31,4 +31,6 @@ querying the gateway's `/ollama-usage` pass-through. Contract lives in
 - L2: repo pair discipline: mirrors pi-actsis-litellm `usage-subs` implementation.
 - L3: contract simplified to ONE GET returning both windows and credits
   (`/ollama-usage` without range param): fewer upstream calls and no path
-  interpolation on the LiteLLM pass-through. S2/S3 updated accordingly.
+  interpolation on the LiteLLM pass-through. S2/S3 updated accordingly.- L4: implemented on feat/usage-subs, work units verified 431/431 tests + typecheck.
+  Exact commit ids recorded in the terminal log of this session (feat + lockfile
+  chore). Mirrors pi sibling commit 72eb208.
