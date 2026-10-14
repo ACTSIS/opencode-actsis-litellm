@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — usage-subs (ventanas de consumo por suscripción)
+## 0.5.0 — 2026-10-14 — Emparejada con pi-actsis-litellm
 
 - **Tool `actsis_litellm_usage_subs` + comando `/actsis-litellm-usage-subs`** —
   consumo de Ollama Cloud por suscripción como el panel del proveedor:
@@ -8,6 +8,8 @@
   créditos, agregados por el collector del gateway.
 - Render tabular con indicadores coloreados por umbral
   (verde/amarillo/naranja/rojo) y padding medido en longitud visible.
+- Auditoría de dependencias: 0 vulnerabilidades (@opencode/plugin 2.0.29,
+  @opentui 0.6.5, solid-js 1.9.17, overrides seroval/esbuild).
 
 ## 0.4.0 — 2026-10-13 — Primera versión compartida con pi-actsis-litellm
 
