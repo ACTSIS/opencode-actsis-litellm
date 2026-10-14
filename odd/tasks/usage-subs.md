@@ -37,3 +37,4 @@ querying the gateway's `/ollama-usage` pass-through. Contract lives in
 - L5: legacy-plan window quotas rendered: credits.session/credits.weekly carry
   remaining_percent + resets_at surfaced by the collector (llm-server L8); plugin
   renders used% gauge + resets per window (mirrors pi 7079ce1).
+- L6 (verbatim, user): "Momento, visualmente no me gusta, tratemos de tabular, como lo hacemos con el comando "usage", para que visualmente sea más ordenado". Render rewritten as the /usage-style table (mirrors pi 1afdcf1); verified typecheck OK + 432/432 tests.

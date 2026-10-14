@@ -178,13 +178,13 @@ describe("fetchUsageSubs", () => {
 describe("formatUsageSubsLines", () => {
   it("renders gauge lines when limitUsd is present", () => {
     const lines = formatUsageSubsLines(sampleBody());
-    expect(lines[0]).toMatch(/Usage subscriptions \(generated at 2026-10-14T12:00:00Z\):/);
-    expect(lines.some((l) => l.includes("Subscription: alpha (Pro)"))).toBe(true);
-    expect(lines.some((l) => /5h: .* 50% · \$5\.00 \/ \$10\.00/.test(l))).toBe(true);
-    expect(lines.some((l) => /Weekly: .* 40% · \$20\.00 \/ \$50\.00/.test(l))).toBe(true);
+    expect(lines[0]).toMatch(/Usage subscriptions \(generated at 2026-10-14T12:00:00Z, UTC\):/);
+    expect(lines[1].includes("Sub") && lines[1].includes("5h used") && lines[1].includes("Credits")).toBe(true);
+    expect(lines.some((l) => l.includes("alpha (Pro)") && /\$5\.00 \/ \$10\.00/.test(l))).toBe(true);
+    expect(lines.some((l) => /\$20\.00 \/ \$50\.00/.test(l))).toBe(true);
     expect(
       lines.some((l) =>
-        /Credits: included \$100\.00 · balance \$80\.00 · purchased \$20\.00/.test(l),
+        l.includes("included $100.00 · balance $80.00 · purchased $20.00"),
       ),
     ).toBe(true);
   });
@@ -225,11 +225,11 @@ describe("formatUsageSubsLines", () => {
         },
       ],
     });
-    expect(lines.some((l) => l.includes("Subscription: beta"))).toBe(true);
+    expect(lines.some((l) => /\bbeta\b/.test(l))).toBe(true);
     expect(lines.some((l) => l.includes("(beta)"))).toBe(false);
-    expect(lines.some((l) => /5h: \$3\.50 \/ 5 reqs \/ 300 tokens/.test(l))).toBe(true);
-    expect(lines.some((l) => /Weekly: \$14\.00 \/ 50 reqs \/ 3,000 tokens/.test(l))).toBe(true);
-    expect(lines.some((l) => l.includes("Credits:"))).toBe(false);
+    expect(lines.some((l) => /5 reqs · 300 tok/.test(l))).toBe(true);
+    expect(lines.some((l) => /50 reqs · 3,000 tok/.test(l))).toBe(true);
+    expect(lines.some((l) => l.includes("included $"))).toBe(false);
   });
 
   it("renders the per-subscription error instead of numeric lines", () => {
@@ -268,11 +268,9 @@ describe("formatUsageSubsLines", () => {
         },
       ],
     });
-    expect(lines.some((l) => l.includes("Subscription: gamma (Basic)"))).toBe(true);
-    expect(lines.some((l) => l.includes("Error: upstream rate limit exceeded"))).toBe(true);
-    expect(lines.some((l) => l.includes("5h:"))).toBe(false);
-    expect(lines.some((l) => l.includes("Weekly:"))).toBe(false);
-    expect(lines.some((l) => l.includes("Credits:"))).toBe(false);
+    expect(lines.some((l) => l.includes("gamma (Basic)"))).toBe(true);
+    expect(lines.some((l) => l.includes("(error: upstream rate limit exceeded)"))).toBe(true);
+    expect(lines.some((l) => l.includes("included $"))).toBe(false);
   });
 
   it("renders the legacy quota gauge and resets from remaining_percent", () => {
@@ -311,10 +309,13 @@ describe("formatUsageSubsLines", () => {
         },
       ],
     });
-    // Used = 100 - remaining (85.47 -> ~15%).
-    expect(lines.some((l) => /5h: .*15% used.*642 reqs.*resets 2026-10-14T15:00:00Z/.test(l))).toBe(true);
-    expect(lines.some((l) => /Weekly: .*12% used.*15,740 reqs.*resets 2026-10-19T00:00:00Z/.test(l))).toBe(true);
-    expect(lines.some((l) => /Credits: purchased \$0\.00/.test(l))).toBe(true);
+    // One table row carries both windows and their resets (used = 100 - remaining:
+    // 85.47 -> ~15%, 88.15 -> ~12%); padded columns collapse to \s+ in patterns.
+    expect(
+      lines.some((l) =>
+        /legacy\s+.*15% 642 reqs\s+10-14 15:00\s+.*12% 15,740 reqs\s+10-19 00:00\s+purchased \$0\.00/.test(l),
+      ),
+    ).toBe(true);
   });
 
   it("shows the no-subscriptions message for an empty list", () => {
@@ -395,10 +396,10 @@ describe("actsis_litellm_usage_subs tool", () => {
     });
     try {
       const result = await usageSubsExecute(makeDeps())({});
-      expect(result.content).toContain("Subscription: alpha (Pro)");
-      expect(result.content).toContain("5h:");
-      expect(result.content).toContain("Weekly:");
-      expect(result.content).toContain("Credits:");
+      expect(result.content).toContain("alpha (Pro)");
+      expect(result.content).toContain("5h used");
+      expect(result.content).toContain("$20.00 / $50.00");
+      expect(result.content).toContain("included $100.00");
     } finally {
       restore();
     }
