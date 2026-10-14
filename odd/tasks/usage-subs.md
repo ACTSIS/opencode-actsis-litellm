@@ -31,6 +31,9 @@ querying the gateway's `/ollama-usage` pass-through. Contract lives in
 - L2: repo pair discipline: mirrors pi-actsis-litellm `usage-subs` implementation.
 - L3: contract simplified to ONE GET returning both windows and credits
   (`/ollama-usage` without range param): fewer upstream calls and no path
-  interpolation on the LiteLLM pass-through. S2/S3 updated accordingly.- L4: implemented on feat/usage-subs, work units verified 431/431 tests + typecheck.
-  Exact commit ids recorded in the terminal log of this session (feat + lockfile
-  chore). Mirrors pi sibling commit 72eb208.
+  interpolation on the LiteLLM pass-through. S2/S3 updated accordingly.- L4: implemented on feat/usage-subs, work units verified 431/431 tests + typecheck:
+  070d9c4 (feature), afc2412 (lockfile sync chore), 1d4ea2c (docs). Mirrors pi
+  sibling commit 72eb208.
+- L5: legacy-plan window quotas rendered: credits.session/credits.weekly carry
+  remaining_percent + resets_at surfaced by the collector (llm-server L8); plugin
+  renders used% gauge + resets per window (mirrors pi 7079ce1).

@@ -77,6 +77,8 @@ function sampleBody(): UsageSubscriptions {
           includedUsd: 100.0,
           includedBalanceUsd: 80.0,
           purchasedUsd: 20.0,
+          session: null,
+          weekly: null,
         },
         error: null,
       },
@@ -216,6 +218,8 @@ describe("formatUsageSubsLines", () => {
             includedUsd: null,
             includedBalanceUsd: null,
             purchasedUsd: null,
+            session: null,
+            weekly: null,
           },
           error: null,
         },
@@ -257,6 +261,8 @@ describe("formatUsageSubsLines", () => {
             includedUsd: null,
             includedBalanceUsd: null,
             purchasedUsd: null,
+            session: null,
+            weekly: null,
           },
           error: "upstream rate limit exceeded",
         },
@@ -267,6 +273,48 @@ describe("formatUsageSubsLines", () => {
     expect(lines.some((l) => l.includes("5h:"))).toBe(false);
     expect(lines.some((l) => l.includes("Weekly:"))).toBe(false);
     expect(lines.some((l) => l.includes("Credits:"))).toBe(false);
+  });
+
+  it("renders the legacy quota gauge and resets from remaining_percent", () => {
+    const lines = formatUsageSubsLines({
+      generatedAt: "2026-10-14T12:00:00Z",
+      subscriptions: [
+        {
+          name: "legacy",
+          plan: null,
+          session5h: {
+            usageUsd: null,
+            limitUsd: null,
+            requests: 642,
+            inputTokens: null,
+            outputTokens: null,
+            from: null,
+            until: null,
+          },
+          weekly: {
+            usageUsd: null,
+            limitUsd: null,
+            requests: 15740,
+            inputTokens: null,
+            outputTokens: null,
+            from: null,
+            until: null,
+          },
+          credits: {
+            includedUsd: null,
+            includedBalanceUsd: null,
+            purchasedUsd: 0,
+            session: { remainingPercent: 85.47, resetsAt: "2026-10-14T15:00:00Z" },
+            weekly: { remainingPercent: 88.15, resetsAt: "2026-10-19T00:00:00Z" },
+          },
+          error: null,
+        },
+      ],
+    });
+    // Used = 100 - remaining (85.47 -> ~15%).
+    expect(lines.some((l) => /5h: .*15% used.*642 reqs.*resets 2026-10-14T15:00:00Z/.test(l))).toBe(true);
+    expect(lines.some((l) => /Weekly: .*12% used.*15,740 reqs.*resets 2026-10-19T00:00:00Z/.test(l))).toBe(true);
+    expect(lines.some((l) => /Credits: purchased \$0\.00/.test(l))).toBe(true);
   });
 
   it("shows the no-subscriptions message for an empty list", () => {
