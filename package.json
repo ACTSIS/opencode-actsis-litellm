@@ -43,11 +43,11 @@
     }
   },
   "devDependencies": {
-    "@opentui/core": "^0.5.14",
-    "@opentui/solid": "^0.5.14",
+    "@opentui/core": "^0.6.5",
+    "@opentui/solid": "^0.6.5",
     "@types/node": "^22",
     "esbuild-plugin-solid": "^0.6.0",
-    "solid-js": "^1.9.12",
+    "solid-js": "^1.9.17",
     "tsup": "^8.5.1",
     "typescript": "^5.7",
     "vitest": "^5.0.3"
@@ -73,6 +73,10 @@
   "license": "MIT",
   "types": "./src/index.ts",
   "dependencies": {
-    "@opencode/plugin": "^2.0.22"
+    "@opencode/plugin": "^2.0.29"
+  },
+  "overrides": {
+    "seroval": "^1.6.9",
+    "esbuild": "^0.28.2"
   }
 }
