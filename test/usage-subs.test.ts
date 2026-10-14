@@ -459,6 +459,10 @@ describe("actsis_litellm_usage_subs tool", () => {
       expect(result.content).toContain("5h used");
       expect(result.content).toContain("$20.00 / $50.00");
       expect(result.content).toContain("included $100.00");
+      // Wired with {color: true}: gauge cells carry truecolor runs (sampleBody
+      // session/weekly quotas are null, so the limitUsd path colors green).
+      expect(result.content).toContain("\x1b[38;2;34;197;94m");
+      expect(result.content).toContain("\x1b[2;39m");
     } finally {
       restore();
     }
