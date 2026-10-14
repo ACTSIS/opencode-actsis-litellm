@@ -322,13 +322,14 @@ describe("mapModelConfigToInfo", () => {
 });
 
 describe("buildCommandDefinitions", () => {
-  it("exposes all six commands in v2 shape (name/description/template)", () => {
+  it("exposes all seven commands in v2 shape (name/description/template)", () => {
     const commands = buildCommandDefinitions();
     expect(commands.map((c) => c.name)).toEqual([
       "actsis-litellm-status",
       "actsis-litellm-models",
       "actsis-litellm-budget",
       "actsis-litellm-usage",
+      "actsis-litellm-usage-subs",
       "actsis-litellm-top",
       "actsis-litellm-logout",
     ]);
@@ -336,8 +337,9 @@ describe("buildCommandDefinitions", () => {
     expect(commands[1].description).toContain("Force-sync");
     expect(commands[2].template).toContain("actsis_litellm_budget tool");
     expect(commands[3].template).toContain("actsis_litellm_usage tool");
-    expect(commands[4].template).toContain("actsis_litellm_top tool");
-    expect(commands[5].description).toContain("Revoke");
+    expect(commands[4].template).toContain("actsis_litellm_usage_subs tool");
+    expect(commands[5].template).toContain("actsis_litellm_top tool");
+    expect(commands[6].description).toContain("Revoke");
   });
 });
 
@@ -781,6 +783,7 @@ describe("server plugin (v2 wiring)", () => {
       "actsis_litellm_budget",
       "actsis_litellm_models",
       "actsis_litellm_usage",
+      "actsis_litellm_usage_subs",
       "actsis_litellm_top",
       "actsis_litellm_logout",
     ]) {
@@ -792,6 +795,7 @@ describe("server plugin (v2 wiring)", () => {
       "actsis-litellm-models",
       "actsis-litellm-budget",
       "actsis-litellm-usage",
+      "actsis-litellm-usage-subs",
       "actsis-litellm-top",
       "actsis-litellm-logout",
     ]);
@@ -986,6 +990,7 @@ describe("triangulation: alternate v2 wiring cases", () => {
       "actsis-litellm-models",
       "actsis-litellm-budget",
       "actsis-litellm-usage",
+      "actsis-litellm-usage-subs",
       "actsis-litellm-top",
       "actsis-litellm-logout",
     ]);

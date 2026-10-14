@@ -19,13 +19,14 @@ function makeToolContext(): ToolContext {
 }
 
 describe("buildLitellmToolInfos", () => {
-  it("exposes the six litellm tools in v2 shape", () => {
+  it("exposes the seven litellm tools in v2 shape", () => {
     const infos = buildLitellmToolInfos({ providerId: "actsis-litellm" });
     expect(infos.map((t) => t.name)).toEqual([
       "actsis_litellm_status",
       "actsis_litellm_budget",
       "actsis_litellm_models",
       "actsis_litellm_usage",
+      "actsis_litellm_usage_subs",
       "actsis_litellm_top",
       "actsis_litellm_logout",
     ]);
@@ -37,9 +38,11 @@ describe("buildLitellmToolInfos", () => {
       expect(info.input.additionalProperties).toBe(false);
       expect(typeof info.execute).toBe("function");
     }
-    // The usage tool accepts an optional window argument; the others are fixed-input.
+    // The usage tools accept optional arguments; the others are fixed-input.
     const usage = infos.find((t) => t.name === "actsis_litellm_usage")!;
     expect((usage.input.properties as Record<string, unknown>).args).toBeDefined();
+    const usageSubs = infos.find((t) => t.name === "actsis_litellm_usage_subs")!;
+    expect((usageSubs.input.properties as Record<string, unknown>).args).toBeUndefined();
   });
 });
 
