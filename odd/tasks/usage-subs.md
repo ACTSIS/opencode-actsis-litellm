@@ -41,3 +41,5 @@ querying the gateway's `/ollama-usage` pass-through. Contract lives in
 - L7: gauge color code mirrored (GAUGE_COLORS truecolor thresholds, visible-length
   padding, {color} option) but NOT wired: opencode tool surfaces lack an ANSI
   guarantee; wire after visual confirmation (pi sibling f7d37be wires it).
+- L8: delivered via PR https://github.com/ACTSIS/opencode-actsis-litellm/pull/8, merge
+  fac6d0b to main (feat/usage-subs 070d9c4→d81ca3f→539741d→471fa02).
