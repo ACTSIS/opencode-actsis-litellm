@@ -43,3 +43,7 @@ querying the gateway's `/ollama-usage` pass-through. Contract lives in
   guarantee; wire after visual confirmation (pi sibling f7d37be wires it).
 - L8: delivered via PR https://github.com/ACTSIS/opencode-actsis-litellm/pull/8, merge
   fac6d0b to main (feat/usage-subs 070d9c4→d81ca3f→539741d→471fa02).
+- L9 (verbatim, user): "Pero necesito el color activo, por ahora en Opencode muestra
+  bien la estructura de la tabla, pero todo en colo blanco". Wired: tool emits
+  {color: true}; ANSI-aware evidence: structure rendered fine + Bun.stripANSI/
+  countAnsiEscapeCodes present in the binary.

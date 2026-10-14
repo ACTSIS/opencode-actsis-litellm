@@ -584,7 +584,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
         )
         : entry.key;
       const data = await fetchUsageSubs(state.gatewayUrl, token, timeout, fetchImpl);
-      return formatUsageSubsLines(data).join("\n");
+      return formatUsageSubsLines(data, { color: true }).join("\n");
     } catch (err) {
       if (err instanceof AuthError) {
         return err.message;

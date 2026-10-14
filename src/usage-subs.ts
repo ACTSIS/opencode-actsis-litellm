@@ -273,8 +273,9 @@ function creditsCell(credits: SubscriptionCredits): string | null {
  *
  * With `{color: true}` the gauge cells carry the same ANSI truecolor
  * thresholds as the pi sibling; padding measures visible length so colored
- * cells stay aligned. Colors are opt-in and not wired to the tool/command
- * yet (see GAUGE_COLORS note).
+ * cells stay aligned. Wired: the tool emits colored gauges ({color: true}) —
+ * opencode's TUI is ANSI-aware (Bun.stripANSI/countAnsiEscapeCodes confirmed
+ * in the binary) per owner visual confirmation of the table structure.
  */
 export function formatUsageSubsLines(
   data: UsageSubscriptions,
