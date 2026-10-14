@@ -15,6 +15,7 @@ import {
   formatUsageTable,
   mapModelAliases,
 } from "./usage.ts";
+import { fetchUsageSubs, formatUsageSubsLines } from "./usage-subs.ts";
 import { resolveUsageRangeDays } from "./usage.ts";
 import { parseTopPrefArg, formatTopToggleAnswer } from "./top-command.ts";
 import { readTopModelsWidgetEnabled, updateTopModelsWidgetEnabled } from "./preferences.ts";
@@ -559,6 +560,40 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     }
   };
 
+  const usageSubs = async (): Promise<string> => {
+    const state = await readPluginState(stateDir);
+    const entry = await readEntry(deps);
+
+    if (!entry) {
+      return "Not signed in — run /login and choose ACTSIS LiteLLM.";
+    }
+    if (!state?.gatewayUrl) {
+      return "Gateway URL not configured.";
+    }
+
+    try {
+      const token = entry.type === "oauth"
+        ? await ensureFreshToken(
+          { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+          {
+            state,
+            timeoutMs: timeout,
+            fetchImpl,
+            onRefreshed,
+          },
+        )
+        : entry.key;
+      const data = await fetchUsageSubs(state.gatewayUrl, token, timeout, fetchImpl);
+      return formatUsageSubsLines(data).join("\n");
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return err.message;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      return `Usage subscriptions unavailable: ${reason}`;
+    }
+  };
+
   const logout = async (): Promise<string> => {
     const state = await readPluginState(stateDir);
     const entry = await readEntry(deps);
@@ -627,6 +662,15 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
       async execute(input) {
         const args = typeof input.args === "string" ? input.args : undefined;
         return { content: await usage(args) };
+      },
+    },
+    {
+      name: "actsis_litellm_usage_subs",
+      description:
+        "Show per-subscription Ollama Cloud usage (5h rolling + weekly) and credit balance.",
+      input: EMPTY_INPUT,
+      async execute() {
+        return { content: await usageSubs() };
       },
     },
     {
