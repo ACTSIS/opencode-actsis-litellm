@@ -149,6 +149,7 @@ disponible.
 | `actsis_litellm_budget` | `/actsis-litellm-budget` | Fuerza una actualización del budget y reporta el resultado exacto (línea de gauge o el motivo preciso del fallo, además del último snapshot conocido cuando la lectura en vivo falla). |
 | `actsis_litellm_models` | `/actsis-litellm-models` | Fuerza una sincronización fresca del catálogo de modelos y reporta modelos agregados/eliminados. |
 | `actsis_litellm_usage` | `/actsis-litellm-usage` | Muestra gasto, tokens y peticiones por modelo para una ventana: sin argumentos (últimos 30 días), un número de días (`14`) o un rango explícito (`2025-03-01 .. 2025-03-31`). Ver [Uso por modelo](#uso-por-modelo). |
+| `actsis_litellm_usage_subs` | `/actsis-litellm-usage-subs` | Muestra, por cada suscripción de Ollama Cloud, el porcentaje restante de la ventana de 5 horas y de la ventana semanal con sus horarios de reinicio (tal como el panel del proveedor) y los créditos, en formato tabular y con indicadores coloreados por nivel de uso. Ver [Uso por suscripción](#uso-por-suscripción). |
 | `actsis_litellm_top` | `/actsis-litellm-top` | Activa, desactiva o alterna el widget Top-5 de gasto de la TUI (`on \| off \| toggle`; sin argumentos alterna) y persiste la preferencia. Ver [Widget de la TUI](#widget-de-la-tui). |
 | `actsis_litellm_logout` | `/actsis-litellm-logout` | Revoca el refresh token (OAuth), limpia el estado local y el caché. |
 
@@ -200,6 +201,33 @@ Total                    $1.2345   89.0k   210
 - **Errores de permisos:** `401` se mapea a "inicia sesión de nuevo"; `403`
   indica que la credencial carece del permiso de las rutas de uso/gasto
   (acción de admin, reloguear no lo corrige).
+
+## Uso por suscripción
+
+La pareja `/actsis-litellm-usage-subs` + tool `actsis_litellm_usage_subs`
+muestra el consumo de las suscripciones de Ollama Cloud del org tal como lo
+presenta el panel administrativo del proveedor: porcentaje **restante** de la
+ventana de 5 horas y de la ventana semanal, por suscripción, con horario de
+reinicio y créditos, agregado por el collector del gateway (`/ollama-usage`).
+El formato es una tabla alineada con indicadores de barra coloreados según el
+porcentaje usado (verde ≤ 50%, amarillo 51-75%, naranja 76-90%, rojo > 90%):
+
+```text
+Usage subscriptions (generated at 2026-10-14T14:56:11Z, UTC):
+Sub  5h used                5h resets (UTC)  Weekly used               Weekly resets (UTC)  Credits
+---------------------------------------------------------------------------------------------------
+0    ▰▱▱▱▱▱▱▱ 18% 732 reqs  10-14 15:00      ▰▱▱▱▱▱▱▱ 12% 15,830 reqs  10-19 00:00          purchased $0.00
+1    ▰▰▱▱▱▱▱▱ 19% 754 reqs  10-14 15:00      ▰▱▱▱▱▱▱▱ 13% 18,589 reqs  10-19 00:00          purchased $0.00
+```
+
+- **Fuente de verdad:** los porcentajes vienen de la API oficial del
+  proveedor (planes antiguos exponen `remaining_percent` por ventana en la
+  API de balance; los planes de crédito exponen incluido/comprado en USD).
+- **Una suscripción con error upstream** no bloquea al resto: su fila muestra
+  `(error: …)` y las demás se sirven igual.
+- Agregar una suscripción nueva es solo una variable de entorno en el gateway
+  (`OLLAMA_CLOUD_KEY_<sufijo>`) más recargar el collector; este plugin no
+  cambia.
 
 ## Widget de la TUI
 
