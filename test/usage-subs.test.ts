@@ -273,6 +273,65 @@ describe("formatUsageSubsLines", () => {
     expect(lines.some((l) => l.includes("included $"))).toBe(false);
   });
 
+describe("formatUsageSubsLines colors", () => {
+  const GREEN = "\x1b[38;2;34;197;94m";
+  const YELLOW = "\x1b[38;2;234;179;8m";
+  const ORANGE = "\x1b[38;2;249;115;22m";
+  const RED = "\x1b[38;2;239;68;68m";
+
+  function quotaSubs(session: number | null, weekly: number | null): UsageSubscriptions {
+    return {
+      generatedAt: "2026-10-14T12:00:00Z",
+      subscriptions: [
+        {
+          name: "legacy",
+          plan: null,
+          session5h: {
+            usageUsd: null, limitUsd: null, requests: 100,
+            inputTokens: null, outputTokens: null, from: null, until: null,
+          },
+          weekly: {
+            usageUsd: null, limitUsd: null, requests: 100,
+            inputTokens: null, outputTokens: null, from: null, until: null,
+          },
+          credits: {
+            includedUsd: null, includedBalanceUsd: null, purchasedUsd: 0,
+            session: session == null ? null : { remainingPercent: session, resetsAt: "2026-10-14T15:00:00Z" },
+            weekly: weekly == null ? null : { remainingPercent: weekly, resetsAt: "2026-10-19T00:00:00Z" },
+          },
+          error: null,
+        },
+      ],
+    };
+  }
+
+  function gaugeRow(lines: string[]): string {
+    // The quota gauge cell lives in the row of the "legacy" subscription.
+    const row = lines.find((l) => l.startsWith("legacy"));
+    expect(row).toBeDefined();
+    return row!;
+  }
+
+  it("colors the gauge green when used is <= 50%", () => {
+    const lines = formatUsageSubsLines(quotaSubs(60, null), { color: true });
+    expect(gaugeRow(lines).includes(`${GREEN}\u25b0`)).toBe(true);
+  });
+
+  it("colors the gauge yellow at 51-75%, orange at 76-90%, red above 90%", () => {
+    const yellow = formatUsageSubsLines(quotaSubs(40, null), { color: true });
+    expect(gaugeRow(yellow).includes(YELLOW)).toBe(true);
+    const orange = formatUsageSubsLines(quotaSubs(15, null), { color: true });
+    expect(gaugeRow(orange).includes(ORANGE)).toBe(true);
+    const red = formatUsageSubsLines(quotaSubs(5, null), { color: true });
+    expect(gaugeRow(red).includes(RED)).toBe(true);
+  });
+
+  it("emits no ANSI by default (color off, wired surface)", () => {
+    const plain = formatUsageSubsLines(quotaSubs(85, 90));
+    expect(plain.some((l) => l.includes("\x1b["))).toBe(false);
+  });
+});
+
   it("renders the legacy quota gauge and resets from remaining_percent", () => {
     const lines = formatUsageSubsLines({
       generatedAt: "2026-10-14T12:00:00Z",
