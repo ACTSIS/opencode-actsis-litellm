@@ -1,4 +1,5 @@
 import { readPluginState, writePluginState, updatePluginState, type PluginState } from "./state.ts";
+import { formatLocalDateTime } from "./datetime.ts";
 import {
   loadCachedModels,
   saveCachedModels,
@@ -54,7 +55,7 @@ function formatExpiry(entry: AuthJsonEntry | null): string {
   if (!entry) return "never";
   if (entry.type === "api") return "never";
   if (!Number.isFinite(entry.expires)) return "never";
-  return new Date(entry.expires).toISOString();
+  return formatLocalDateTime(entry.expires) ?? "never";
 }
 
 /**
@@ -632,7 +633,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
   return [
     {
       name: "actsis_litellm_status",
-      description: "Show LiteLLM gateway status, credential state, and model cache age.",
+      description: "Show LiteLLM gateway status, credential state, and cache age (dates in system timezone).",
       input: EMPTY_INPUT,
       async execute() {
         return { content: await status() };
@@ -657,7 +658,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     {
       name: "actsis_litellm_usage",
       description:
-        "Show per-model usage from the LiteLLM gateway (spend, tokens, requests) for a window; supports day counts and explicit date ranges.",
+        "Show per-model usage from the LiteLLM gateway (spend, tokens, requests) for a UTC date window; supports day counts and explicit date ranges.",
       input: USAGE_INPUT,
       async execute(input) {
         const args = typeof input.args === "string" ? input.args : undefined;
@@ -667,7 +668,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     {
       name: "actsis_litellm_usage_subs",
       description:
-        "Show per-subscription Ollama Cloud usage (5h rolling + weekly) and credit balance.",
+        "Show per-subscription Ollama Cloud usage, credits and system-local generation date; reset countdowns: 5h hours/minutes, weekly days/hours.",
       input: EMPTY_INPUT,
       async execute() {
         return { content: await usageSubs() };
@@ -676,7 +677,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     {
       name: "actsis_litellm_top",
       description:
-        "Enable, disable, or toggle the Top-5 spend models TUI widget; persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows.",
+        "Enable, disable, or toggle the Top-5 spend models TUI widget (7 UTC days); persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows.",
       input: TOP_INPUT,
       async execute(input) {
         const args = typeof input.args === "string" ? input.args : undefined;

@@ -178,7 +178,7 @@ describe("fetchUsageSubs", () => {
 describe("formatUsageSubsLines", () => {
   it("renders gauge lines when limitUsd is present", () => {
     const lines = formatUsageSubsLines(sampleBody());
-    expect(lines[0]).toMatch(/Usage subscriptions \(generated at 2026-10-14T12:00:00Z, UTC\):/);
+    expect(lines[0]).toMatch(/Usage subscriptions \(generated at \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(.+\)\):/);
     expect(lines[1].includes("Sub") && lines[1].includes("5h used") && lines[1].includes("Credits")).toBe(true);
     expect(lines.some((l) => l.includes("alpha (Pro)") && /\$5\.00 \/ \$10\.00/.test(l))).toBe(true);
     expect(lines.some((l) => /\$20\.00 \/ \$50\.00/.test(l))).toBe(true);
@@ -332,7 +332,8 @@ describe("formatUsageSubsLines colors", () => {
   });
 });
 
-  it("renders the legacy quota gauge and resets from remaining_percent", () => {
+  it("renders the legacy quota gauge and remaining reset durations", () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-14T12:00:00Z"));
     const lines = formatUsageSubsLines({
       generatedAt: "2026-10-14T12:00:00Z",
       subscriptions: [
@@ -372,7 +373,7 @@ describe("formatUsageSubsLines colors", () => {
     // 85.47 -> ~15%, 88.15 -> ~12%); padded columns collapse to \s+ in patterns.
     expect(
       lines.some((l) =>
-        /legacy\s+.*15% 642 reqs\s+10-14 15:00\s+.*12% 15,740 reqs\s+10-19 00:00\s+purchased \$0\.00/.test(l),
+        /legacy\s+.*15% 642 reqs\s+3 h 0 min\s+.*12% 15,740 reqs\s+4 d 12 h\s+purchased \$0\.00/.test(l),
       ),
     ).toBe(true);
   });

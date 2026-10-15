@@ -626,7 +626,7 @@ describe("formatUsageLines", () => {
       ],
     });
     expect(lines.length).toBe(2);
-    expect(lines[0]).toMatch(/Usage 2025-03-20 → 2025-03-27 \(8 days\): spend \$0\.0300/);
+    expect(lines[0]).toMatch(/Usage 2025-03-20 → 2025-03-27 \(8 UTC days\): spend \$0\.0300/);
     expect(lines[1]).toMatch(/gpt-x\s+\$0\.0200\s+460 tok\s+5 reqs/);
   });
 });

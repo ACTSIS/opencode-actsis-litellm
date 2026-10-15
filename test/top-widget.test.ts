@@ -66,7 +66,7 @@ describe("buildTopModelsWidgetLines", () => {
       totalSpend: 113.03,
     });
     expect(lines).toHaveLength(5);
-    expect(lines[0]).toContain("Top models (7d)");
+    expect(lines[0]).toContain("Top models (7d, UTC days)");
     expect(lines[0]).toContain("$113.03");
     expect(lines[1]).toMatch(/^=+$/);
     const width = lines[1].length;
@@ -108,7 +108,7 @@ describe("buildTopModelsWidgetLines", () => {
       windowLabel: "7d",
       rows: sampleRows,
     });
-    expect(lines[0]).toBe("Top models (7d)");
+    expect(lines[0]).toBe("Top models (7d, UTC days)");
   });
 
   it("renders at most 5 rows by default", () => {
@@ -176,7 +176,7 @@ describe("topWidgetLines / readTopWidgetData", () => {
   it("renders rows with the budget-free top block only", () => {
     const lines = topWidgetLines(data, 1_000_100);
     expect(lines?.length).toBe(5);
-    expect(lines?.[0]).toContain("Top models (7d)");
+    expect(lines?.[0]).toContain("Top models (7d, UTC days)");
   });
 
   it("readTopWidgetData parses the persisted top fields", async () => {
