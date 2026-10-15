@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 — 2026-10-15 — Emparejada con pi-actsis-litellm
 
 - **Ritmo de ventana en `usage_subs`** — el indicador coloreado de las ventanas
   ya no se decide solo por el porcentaje usado: cuando el consumo va adelantado
