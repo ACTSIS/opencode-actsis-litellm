@@ -2302,6 +2302,40 @@ function gaugeColorAnsi(usedPercent) {
   const color = usedPercent <= 50 ? GAUGE_COLORS.green : usedPercent <= 75 ? GAUGE_COLORS.yellow : usedPercent <= 90 ? GAUGE_COLORS.orange : GAUGE_COLORS.red;
   return `\x1B[${color}m`;
 }
+var SESSION_WINDOW_MS = 5 * 36e5;
+var WEEK_WINDOW_MS = 7 * 24 * 36e5;
+var MIN_ELAPSED_PERCENT = 10;
+var MAX_PROJECTED_PERCENT = 200;
+function clampPercent(value) {
+  return Math.min(100, Math.max(0, value));
+}
+function windowElapsedPercent(window, quota, weekly, now) {
+  const from = window.from ? Date.parse(window.from) : NaN;
+  const until = window.until ? Date.parse(window.until) : NaN;
+  if (Number.isFinite(from) && Number.isFinite(until) && until > from) {
+    return clampPercent((now - from) / (until - from) * 100);
+  }
+  const resetsAt = quota?.resetsAt;
+  if (!resetsAt) return null;
+  const reset = Date.parse(resetsAt);
+  if (!Number.isFinite(reset)) return null;
+  const length = weekly ? WEEK_WINDOW_MS : SESSION_WINDOW_MS;
+  return clampPercent((length - Math.max(0, reset - now)) / length * 100);
+}
+function paceOverElapsed(usedPercent, elapsedPercent) {
+  if (elapsedPercent == null) return null;
+  return usedPercent / Math.max(elapsedPercent, MIN_ELAPSED_PERCENT);
+}
+function escalatedUsedPercent(usedPercent, aheadOfPace) {
+  if (!aheadOfPace) return usedPercent;
+  return usedPercent <= 50 ? 51 : usedPercent <= 75 ? 76 : usedPercent <= 90 ? 91 : usedPercent;
+}
+function paceProjectionSuffix(usedPercent, elapsedPercent) {
+  const pace = paceOverElapsed(usedPercent, elapsedPercent);
+  if (pace == null || pace <= 1) return "";
+  const projected = Math.min(MAX_PROJECTED_PERCENT, Math.round(pace * 100));
+  return ` \u2192 ${projected}%`;
+}
 var ANSI_SGR = /\x1b\[[0-9;]*m/g;
 function visibleLength(cell) {
   return cell.replace(ANSI_SGR, "").length;
@@ -2414,20 +2448,25 @@ async function fetchUsageSubs(gatewayUrl, apiKey, timeoutMs, fetchImpl = globalT
   }
   return parseUsageSubscriptions(body);
 }
-function formatWindowCell(window, quota, color) {
+function formatWindowCell(window, quota, weekly, color, now) {
   const usage = window.usageUsd ?? 0;
   const requests = window.requests ?? 0;
+  const elapsed = windowElapsedPercent(window, quota, weekly, now);
   if (quota != null && quota.remainingPercent != null) {
-    const used = Math.min(100, Math.max(0, 100 - quota.remainingPercent));
-    const run = `${usageGauge(used)} ${Math.round(used)}% ${requests.toLocaleString("en-US")} reqs`;
-    return color ? `${gaugeColorAnsi(used)}${run}\x1B[2;39m` : run;
+    const used = clampPercent(100 - quota.remainingPercent);
+    const pace = paceOverElapsed(used, elapsed);
+    const ahead = pace != null && pace > 1;
+    const run = `${usageGauge(used)} ${Math.round(used)}%${paceProjectionSuffix(used, elapsed)} ${requests.toLocaleString("en-US")} reqs`;
+    return color ? `${gaugeColorAnsi(escalatedUsedPercent(used, ahead))}${run}\x1B[2;39m` : run;
   }
   const tokens = (window.inputTokens ?? 0) + (window.outputTokens ?? 0);
   if (window.limitUsd != null) {
     const limit = window.limitUsd;
-    const percent = limit > 0 ? Math.min(100, Math.max(0, usage / limit * 100)) : usage > 0 ? 100 : 0;
-    const run = `${usageGauge(percent)} $${usage.toFixed(2)} / $${limit.toFixed(2)}`;
-    return color ? `${gaugeColorAnsi(percent)}${run}\x1B[2;39m` : run;
+    const percent = limit > 0 ? clampPercent(usage / limit * 100) : usage > 0 ? 100 : 0;
+    const pace = paceOverElapsed(percent, elapsed);
+    const ahead = pace != null && pace > 1;
+    const run = `${usageGauge(percent)} $${usage.toFixed(2)} / $${limit.toFixed(2)}${paceProjectionSuffix(percent, elapsed)}`;
+    return color ? `${gaugeColorAnsi(escalatedUsedPercent(percent, ahead))}${run}\x1B[2;39m` : run;
   }
   return `${requests.toLocaleString("en-US")} reqs \xB7 ${tokens.toLocaleString("en-US")} tok`;
 }
@@ -2470,9 +2509,9 @@ function formatUsageSubsLines(data, options = {}) {
   const header = ["Sub", "5h used", "5h resets in", "Weekly used", "Weekly resets in", "Credits"];
   const rows = data.subscriptions.map((sub) => [
     sub.plan ? `${sub.name} (${sub.plan})` : sub.name,
-    sub.error ? `(error: ${sub.error})` : formatWindowCell(sub.session5h, sub.credits.session, color),
+    sub.error ? `(error: ${sub.error})` : formatWindowCell(sub.session5h, sub.credits.session, false, color, now),
     sub.error ? "-" : formatResetsCell(sub.credits.session, false, now),
-    sub.error ? "-" : formatWindowCell(sub.weekly, sub.credits.weekly, color),
+    sub.error ? "-" : formatWindowCell(sub.weekly, sub.credits.weekly, true, color, now),
     sub.error ? "-" : formatResetsCell(sub.credits.weekly, true, now),
     sub.error ? "-" : creditsCell(sub.credits) ?? "-"
   ]);

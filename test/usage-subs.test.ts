@@ -332,6 +332,127 @@ describe("formatUsageSubsLines colors", () => {
   });
 });
 
+describe("formatUsageSubsLines window pace", () => {
+  const GREEN = "\x1b[38;2;34;197;94m";
+  const YELLOW = "\x1b[38;2;234;179;8m";
+
+  /** Quota subscription with a per-window reset instant for pace control. */
+  function pacedQuotaSubs(
+    sessionRemaining: number,
+    sessionResetsAt: string,
+  ): UsageSubscriptions {
+    return {
+      generatedAt: "2026-10-14T12:00:00Z",
+      subscriptions: [
+        {
+          name: "paced",
+          plan: null,
+          session5h: {
+            usageUsd: null, limitUsd: null, requests: 40,
+            inputTokens: null, outputTokens: null, from: null, until: null,
+          },
+          weekly: {
+            usageUsd: null, limitUsd: null, requests: 40,
+            inputTokens: null, outputTokens: null, from: null, until: null,
+          },
+          credits: {
+            includedUsd: null, includedBalanceUsd: null, purchasedUsd: 0,
+            session: { remainingPercent: sessionRemaining, resetsAt: sessionResetsAt },
+            weekly: null,
+          },
+          error: null,
+        },
+      ],
+    };
+  }
+
+  it("escalates the color and projects when usage runs ahead of the window", () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-14T12:00:00Z"));
+    // remainingPercent 85 -> used 15; reset at 16:30 leaves 4.5h of the 5h window:
+    // elapsed 10% (floor), pace 1.5.
+    const colored = formatUsageSubsLines(pacedQuotaSubs(85, "2026-10-14T16:30:00Z"), { color: true });
+    const row = colored.find((l) => l.startsWith("paced"));
+    expect(row).toBeDefined();
+    expect(row!.includes(YELLOW)).toBe(true);
+    expect(row!.replace(/\x1b\[[0-9;]*m/g, "")).toMatch(/15% → 150%/);
+  });
+
+  it("shows no projection and keeps the base color when usage is on or under pace", () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-14T12:00:00Z"));
+    // Reset at 15:00 leaves 3h: elapsed 40%; used 15% -> pace 0.375.
+    const lines = formatUsageSubsLines(pacedQuotaSubs(85, "2026-10-14T15:00:00Z"), { color: true });
+    const row = lines.find((l) => l.startsWith("paced"));
+    expect(row).toBeDefined();
+    expect(row!.includes(GREEN)).toBe(true);
+    expect(row!.includes("→")).toBe(false);
+  });
+
+  it("projects from explicit window bounds and caps the projection for the dollar path", () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-14T12:00:00Z"));
+    // Window 11:55-16:55: elapsed 1.67% -> floored to 10%; used 50% -> pace 5,
+    // projection capped at 200%.
+    const lines = formatUsageSubsLines({
+      generatedAt: null,
+      subscriptions: [
+        {
+          name: "dollar",
+          plan: null,
+          session5h: {
+            usageUsd: 5.0, limitUsd: 10.0, requests: 8,
+            inputTokens: null, outputTokens: null,
+            from: "2026-10-14T11:55:00Z", until: "2026-10-14T16:55:00Z",
+          },
+          weekly: {
+            usageUsd: 20.0, limitUsd: 50.0, requests: 80,
+            inputTokens: null, outputTokens: null, from: null, until: null,
+          },
+          credits: {
+            includedUsd: null, includedBalanceUsd: null, purchasedUsd: 0,
+            session: null, weekly: null,
+          },
+          error: null,
+        },
+      ],
+    }, { color: true });
+    const row = lines.find((l) => l.startsWith("dollar"));
+    expect(row).toBeDefined();
+    const visible = row!.replace(/\x1b\[[0-9;]*m/g, "");
+    expect(visible).toMatch(/\$5\.00 \/ \$10\.00 → 200%/);
+    expect(row!.includes(YELLOW)).toBe(true);
+  });
+
+  it("omits the projection when no window boundary is known", () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-14T12:00:00Z"));
+    const lines = formatUsageSubsLines({
+      generatedAt: null,
+      subscriptions: [
+        {
+          name: "opaque",
+          plan: null,
+          session5h: {
+            usageUsd: 5.0, limitUsd: 10.0, requests: 8,
+            inputTokens: null, outputTokens: null, from: null, until: null,
+          },
+          weekly: {
+            usageUsd: 2.0, limitUsd: 50.0, requests: 8,
+            inputTokens: null, outputTokens: null, from: null, until: null,
+          },
+          credits: {
+            includedUsd: null, includedBalanceUsd: null, purchasedUsd: 0,
+            session: null, weekly: null,
+          },
+          error: null,
+        },
+      ],
+    }, { color: true });
+    const row = lines.find((l) => l.startsWith("opaque"));
+    expect(row).toBeDefined();
+    const visible = row!.replace(/\x1b\[[0-9;]*m/g, "");
+    expect(visible).toMatch(/\$5\.00 \/ \$10\.00(?! →)/);
+    expect(row!.includes(GREEN)).toBe(true);
+  });
+});
+
   it("renders the legacy quota gauge and remaining reset durations", () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-14T12:00:00Z"));
     const lines = formatUsageSubsLines({
