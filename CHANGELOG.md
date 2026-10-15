@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.2 — 2026-10-15 — Emparejada con pi-actsis-litellm
 
 - Corregido: **ritmo de ventana en `usage_subs`** — el collector en vivo envía
   `from`/`until` con `until ≈ hora de generación` (rango de medición cerrado);
