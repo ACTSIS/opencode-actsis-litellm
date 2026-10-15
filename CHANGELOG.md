@@ -1,13 +1,30 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-10-15 — Emparejada con pi-actsis-litellm
 
-- Fechas absolutas visibles en la zona del sistema, con fecha, reloj de 24 horas,
-  identificador de zona y offset, en paridad con pi-actsis-litellm.
-- Reinicios de suscripción como tiempo restante: horas/minutos para 5h y
-  días/horas para la ventana semanal; se conservan indicadores y créditos.
-- Rangos de consumo y Top models identificados como días UTC sin cambiar
-  los límites de consulta ni las duraciones.
+Esta versión conserva la paridad funcional y de empaquetado con la extensión
+hermana `pi-actsis-litellm`. Como la etiqueta `v0.5.0` quedó marcada sin
+release publicado, las notas públicas de esta versión consolidan el trabajo
+introducido desde la última release publicada (`v0.4.0`).
+
+### Agregado
+
+- **Reinicios de suscripción como tiempo restante** — la ventana de 5 horas
+  muestra horas/minutos (`2 h 35 min`) y la ventana semanal, días/horas
+  (`3 d 8 h`), en lugar de fechas absolutas de reinicio. Los tiempos se redondean
+  hacia arriba a la unidad mostrada; los reinicios vencidos muestran cero y las
+  fechas ausentes o inválidas muestran `-`.
+- **Fechas absolutas en la zona del sistema** — generación de reportes de
+  suscripción, vencimiento de credenciales, reinicio del presupuesto y reinicio
+  por límites se muestran con fecha local, reloj de 24 horas, identificador de
+  zona y desplazamiento UTC (`2026-10-14 09:56 (America/Bogota, GMT-05:00)`),
+  incluyendo cambios de horario de verano. No se requiere configurar zona.
+- **Rangos UTC explícitos** — `/actsis-litellm-usage`, `actsis_litellm_usage` y
+  el widget Top models conservan sus cálculos y totales por rangos de fechas UTC,
+  ahora identificados como días UTC. Las duraciones y la antigüedad de caché no
+  dependen de la zona horaria.
+- **Paquete publicado actualizado** — el bundle `dist/` incluye el comando y las
+  herramientas de suscripción junto con la presentación de fechas y reinicios.
 
 ## 0.5.0 — 2026-10-14 — Emparejada con pi-actsis-litellm
 
