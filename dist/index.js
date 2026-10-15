@@ -2310,17 +2310,20 @@ function clampPercent(value) {
   return Math.min(100, Math.max(0, value));
 }
 function windowElapsedPercent(window, quota, weekly, now) {
+  const resetsAt = quota?.resetsAt;
+  if (resetsAt) {
+    const reset = Date.parse(resetsAt);
+    if (Number.isFinite(reset)) {
+      const length = weekly ? WEEK_WINDOW_MS : SESSION_WINDOW_MS;
+      return clampPercent((length - Math.max(0, reset - now)) / length * 100);
+    }
+  }
   const from = window.from ? Date.parse(window.from) : NaN;
   const until = window.until ? Date.parse(window.until) : NaN;
-  if (Number.isFinite(from) && Number.isFinite(until) && until > from) {
+  if (Number.isFinite(from) && Number.isFinite(until) && until > now && until > from) {
     return clampPercent((now - from) / (until - from) * 100);
   }
-  const resetsAt = quota?.resetsAt;
-  if (!resetsAt) return null;
-  const reset = Date.parse(resetsAt);
-  if (!Number.isFinite(reset)) return null;
-  const length = weekly ? WEEK_WINDOW_MS : SESSION_WINDOW_MS;
-  return clampPercent((length - Math.max(0, reset - now)) / length * 100);
+  return null;
 }
 function paceOverElapsed(usedPercent, elapsedPercent) {
   if (elapsedPercent == null) return null;

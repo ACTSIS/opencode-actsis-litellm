@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Corregido: **ritmo de ventana en `usage_subs`** — el collector en vivo envía
+  `from`/`until` con `until ≈ hora de generación` (rango de medición cerrado);
+  con la precedencia original eso computaba ~100% de ventana transcurrida y
+  deshabilitaba en silencio el escalado de color y la proyección. Ahora el
+  instante de reinicio (`resetsAt`, contra la longitud fija 5h/semanal) decide
+  el transcurrido, y los límites `from`/`until` del collector solo se usan
+  cuando no hay reinicio y la ventana sigue abierta (`until > ahora`); rangos
+  cerrados no aportan ritmo. Reporte vivo: 5h con 57% usado y reinicio a
+  `3 h 26 min` (~31% transcurrido, ritmo 1.82) se mostraba amarillo sin
+  proyección; con la corrección queda naranja con `→ 182%`. Cierra #17,
+  espejo del fix de pi-actsis-litellm (issue #31, PR #32).
+
 ## 0.6.1 — 2026-10-15 — Emparejada con pi-actsis-litellm
 
 - **Ritmo de ventana en `usage_subs`** — el indicador coloreado de las ventanas

@@ -246,8 +246,10 @@ Sub  5h used                5h resets in  Weekly used               Weekly reset
   el color escala un nivel de umbral y la celda agrega la proyección lineal
   del % usado al fin de la ventana (`15% → 150%`, con techo de 200%). En ritmo
   o debajo del ritmo, las celdas conservan los colores por umbral absoluto;
-  sin límites de ventana conocidos (sin `from`/`until` y sin instante de
-  reinicio) no hay correlación posible y queda el color por umbral absoluto.
+  sin límites de ventana utilizables — sin instante de reinicio, o bien
+  límites `from`/`until` del collector terminando en la hora de generación
+  (rango de medición cerrado) — no hay correlación posible y queda el color
+  por umbral absoluto.
 - **Fuente de verdad:** los porcentajes vienen de la API oficial del
   proveedor (planes antiguos exponen `remaining_percent` por ventana en la
   API de balance; los planes de crédito exponen incluido/comprado en USD).

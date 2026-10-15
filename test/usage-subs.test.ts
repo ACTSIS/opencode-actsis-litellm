@@ -453,6 +453,79 @@ describe("formatUsageSubsLines window pace", () => {
   });
 });
 
+describe("formatUsageSubsLines window pace collector bounds", () => {
+  const GREEN = "\x1b[38;2;34;197;94m";
+  const ORANGE = "\x1b[38;2;249;115;22m";
+
+  it("defers to the quota reset when the collector bounds end at generation time (regression #17)", () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-15T17:34:00Z"));
+    // Live collector semantics: until == generation time (closed measurement
+    // range). Live row was 57% used with reset 3 h 26 min away: elapsed ~31%,
+    // pace 1.82 -> orange + projection; the defect rendered yellow silently.
+    const lines = formatUsageSubsLines({
+      generatedAt: "2026-10-15T17:34:00Z",
+      subscriptions: [
+        {
+          name: "live-bug",
+          plan: "Pro",
+          session5h: {
+            usageUsd: null, limitUsd: null, requests: 2752,
+            inputTokens: null, outputTokens: null,
+            from: "2026-10-15T12:34:00Z", until: "2026-10-15T17:34:00Z",
+          },
+          weekly: {
+            usageUsd: null, limitUsd: null, requests: 15568,
+            inputTokens: null, outputTokens: null, from: null, until: null,
+          },
+          credits: {
+            includedUsd: null, includedBalanceUsd: null, purchasedUsd: 0,
+            session: { remainingPercent: 43, resetsAt: "2026-10-15T21:00:00Z" },
+            weekly: { remainingPercent: 63, resetsAt: "2026-10-19T00:30:00Z" },
+          },
+          error: null,
+        },
+      ],
+    }, { color: true });
+    const row = lines.find((l) => l.startsWith("live-bug"));
+    expect(row).toBeDefined();
+    const visible = row!.replace(/\x1b\[[0-9;]*m/g, "");
+    expect(visible).toMatch(/57% → 182%/);
+    expect(row!.includes(ORANGE)).toBe(true);
+  });
+
+  it("renders no projection when the dollar window range is closed (until <= now)", () => {
+    vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-15T17:34:00Z"));
+    const lines = formatUsageSubsLines({
+      generatedAt: null,
+      subscriptions: [
+        {
+          name: "closed",
+          plan: null,
+          session5h: {
+            usageUsd: 6.0, limitUsd: 10.0, requests: 9,
+            inputTokens: null, outputTokens: null,
+            from: "2026-10-15T12:34:00Z", until: "2026-10-15T17:34:00Z",
+          },
+          weekly: {
+            usageUsd: 1.0, limitUsd: 50.0, requests: 9,
+            inputTokens: null, outputTokens: null, from: null, until: null,
+          },
+          credits: {
+            includedUsd: null, includedBalanceUsd: null, purchasedUsd: 0,
+            session: null, weekly: null,
+          },
+          error: null,
+        },
+      ],
+    }, { color: true });
+    const row = lines.find((l) => l.startsWith("closed"));
+    expect(row).toBeDefined();
+    const visible = row!.replace(/\x1b\[[0-9;]*m/g, "");
+    expect(visible.includes("→")).toBe(false);
+    expect(row!.includes(GREEN)).toBe(true);
+  });
+});
+
   it("renders the legacy quota gauge and remaining reset durations", () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-14T12:00:00Z"));
     const lines = formatUsageSubsLines({
