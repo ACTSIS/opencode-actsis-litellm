@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Ritmo de ventana en `usage_subs`** — el indicador coloreado de las ventanas
+  ya no se decide solo por el porcentaje usado: cuando el consumo va adelantado
+  respecto a la ventana (ritmo = % usado / % transcurrido > 1, con piso de 10%
+  transcurrido), el color escala un nivel de umbral y la celda agrega la
+  proyección lineal al fin de la ventana (`15% → 150%`, techo de 200%). Sin
+  límites de ventana conocidos (`from`/`until` o instante de reinicio) se
+  conserva el color por umbral absoluto y no se muestra proyección. Espeja la
+  funcionalidad emparejada de `pi-actsis-litellm`.
+
 ## 0.6.0 — 2026-10-15 — Emparejada con pi-actsis-litellm
 
 Esta versión conserva la paridad funcional y de empaquetado con la extensión
