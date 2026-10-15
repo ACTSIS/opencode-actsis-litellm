@@ -610,7 +610,7 @@ export function formatUsageTable(
 ): string[] {
   const lines: string[] = [];
   const totalSpend = summary.totals.spend ?? 0;
-  const header = `Usage ${summary.startDate} → ${summary.endDate} (${rangeLengthDays(summary)} days): $${totalSpend.toFixed(4)}`;
+  const header = `Usage ${summary.startDate} → ${summary.endDate} (${rangeLengthDays(summary)} UTC days): $${totalSpend.toFixed(4)}`;
   lines.push(header);
   if (summary.models.length === 0) {
     lines.push("(no logged model usage in this range)");
@@ -651,7 +651,7 @@ export function formatUsageLines(summary: ModelUsageSummary): string[] {
   const totalTokens = summary.totals.totalTokens ?? 0;
   const apiRequests = summary.totals.apiRequests ?? 0;
   lines.push(
-    `Usage ${summary.startDate} → ${summary.endDate} (${rangeLengthDays(summary)} days): spend $${spend.toFixed(4)}, ${totalTokens} tokens, ${apiRequests} requests`,
+    `Usage ${summary.startDate} → ${summary.endDate} (${rangeLengthDays(summary)} UTC days): spend $${spend.toFixed(4)}, ${totalTokens} tokens, ${apiRequests} requests`,
   );
   if (summary.models.length === 0) {
     lines.push("  (no logged model usage in this range)");

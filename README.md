@@ -149,7 +149,7 @@ disponible.
 | `actsis_litellm_budget` | `/actsis-litellm-budget` | Fuerza una actualización del budget y reporta el resultado exacto (línea de gauge o el motivo preciso del fallo, además del último snapshot conocido cuando la lectura en vivo falla). |
 | `actsis_litellm_models` | `/actsis-litellm-models` | Fuerza una sincronización fresca del catálogo de modelos y reporta modelos agregados/eliminados. |
 | `actsis_litellm_usage` | `/actsis-litellm-usage` | Muestra gasto, tokens y peticiones por modelo para una ventana: sin argumentos (últimos 30 días), un número de días (`14`) o un rango explícito (`2025-03-01 .. 2025-03-31`). Ver [Uso por modelo](#uso-por-modelo). |
-| `actsis_litellm_usage_subs` | `/actsis-litellm-usage-subs` | Muestra, por cada suscripción de Ollama Cloud, el porcentaje restante de la ventana de 5 horas y de la ventana semanal con sus horarios de reinicio (tal como el panel del proveedor) y los créditos, en formato tabular y con indicadores coloreados por nivel de uso. Ver [Uso por suscripción](#uso-por-suscripción). |
+| `actsis_litellm_usage_subs` | `/actsis-litellm-usage-subs` | Muestra, por cada suscripción de Ollama Cloud, el porcentaje restante de la ventana de 5 horas y de la ventana semanal con el tiempo restante hasta el reinicio y los créditos, en formato tabular y con indicadores coloreados por nivel de uso. Ver [Uso por suscripción](#uso-por-suscripción). |
 | `actsis_litellm_top` | `/actsis-litellm-top` | Activa, desactiva o alterna el widget Top-5 de gasto de la TUI (`on \| off \| toggle`; sin argumentos alterna) y persiste la preferencia. Ver [Widget de la TUI](#widget-de-la-tui). |
 | `actsis_litellm_logout` | `/actsis-litellm-logout` | Revoca el refresh token (OAuth), limpia el estado local y el caché. |
 
@@ -164,7 +164,7 @@ gasto, tokens y peticiones agregados por modelo a partir de los registros de
 gasto del gateway:
 
 ```
-Usage 2025-02-26 → 2025-03-27 (30 days): $1.2345
+Usage 2025-02-26 → 2025-03-27 (30 UTC days): $1.2345
 Model                      Spend  Tokens  Reqs
 --------------------------------------------------
 oc/gpt-x                 $0.9800   61.0k   130
@@ -202,24 +202,42 @@ Total                    $1.2345   89.0k   210
   indica que la credencial carece del permiso de las rutas de uso/gasto
   (acción de admin, reloguear no lo corrige).
 
+## Fechas y zonas horarias
+
+Las fechas de generación, vencimiento de credenciales y reinicio de presupuesto
+y límites usan la zona horaria del sistema donde se ejecuta OpenCode. Se muestran
+como `YYYY-MM-DD HH:mm (America/Bogota, GMT-05:00)`, con reloj de 24 horas y
+el offset correspondiente al instante, incluidos los cambios de horario de verano.
+No se requiere configurar una zona fija. Los valores no disponibles conservan
+`-` para generación y `never` para vencimiento.
+
+Las duraciones y la antigüedad de caché no dependen de la zona horaria.
+`/actsis-litellm-usage` y Top models conservan sus límites de consulta por fechas
+UTC y los identifican como `UTC days`; esto no presupone la zona de agregación
+del gateway. Calcular totales por día local requeriría otro contrato del servidor.
+
 ## Uso por suscripción
 
 La pareja `/actsis-litellm-usage-subs` + tool `actsis_litellm_usage_subs`
 muestra el consumo de las suscripciones de Ollama Cloud del org tal como lo
 presenta el panel administrativo del proveedor: porcentaje **restante** de la
-ventana de 5 horas y de la ventana semanal, por suscripción, con horario de
-reinicio y créditos, agregado por el collector del gateway (`/ollama-usage`).
+ventana de 5 horas y de la ventana semanal, por suscripción, con tiempo restante
+hasta el reinicio y créditos, agregado por el collector del gateway (`/ollama-usage`).
 El formato es una tabla alineada con indicadores de barra coloreados según el
 porcentaje usado (verde ≤ 50%, amarillo 51-75%, naranja 76-90%, rojo > 90%):
 
 ```text
-Usage subscriptions (generated at 2026-10-14T14:56:11Z, UTC):
-Sub  5h used                5h resets (UTC)  Weekly used               Weekly resets (UTC)  Credits
----------------------------------------------------------------------------------------------------
-0    ▰▱▱▱▱▱▱▱ 18% 732 reqs  10-14 15:00      ▰▱▱▱▱▱▱▱ 12% 15,830 reqs  10-19 00:00          purchased $0.00
-1    ▰▰▱▱▱▱▱▱ 19% 754 reqs  10-14 15:00      ▰▱▱▱▱▱▱▱ 13% 18,589 reqs  10-19 00:00          purchased $0.00
+Usage subscriptions (generated at 2026-10-14 09:56 (America/Bogota, GMT-05:00)):
+Sub  5h used                5h resets in  Weekly used               Weekly resets in  Credits
+----------------------------------------------------------------------------------------------
+0    ▰▱▱▱▱▱▱▱ 18% 732 reqs  0 h 4 min     ▰▱▱▱▱▱▱▱ 12% 15,830 reqs  4 d 10 h          purchased $0.00
+1    ▰▰▱▱▱▱▱▱ 19% 754 reqs  0 h 4 min     ▰▱▱▱▱▱▱▱ 13% 18,589 reqs  4 d 10 h          purchased $0.00
 ```
 
+- **Tiempo hasta el reinicio:** horas/minutos para la ventana de 5 horas,
+  días/horas para la semanal, calculados al mostrar el resultado y redondeados
+  hacia arriba a la unidad visible. Reinicios vencidos muestran cero; fechas
+  ausentes o inválidas muestran `-`.
 - **Fuente de verdad:** los porcentajes vienen de la API oficial del
   proveedor (planes antiguos exponen `remaining_percent` por ventana en la
   API de balance; los planes de crédito exponen incluido/comprado en USD).
@@ -246,7 +264,7 @@ datos de budget.
 ### Filas Top-5 de modelos
 
 Bajo la línea de Budget, el widget también renderiza las **Top-5 de modelos
-por gasto** de los últimos 7 días: una línea de título `Top models (7d) ·
+por gasto** de los últimos 7 días: una línea de título `Top models (7d, UTC days) ·
 $<total>` con su separador `=`, y hasta 5 filas con el nombre del modelo a la
 izquierda, el gasto y el porcentaje de participación alineados a la derecha y
 un gauge de 8 celdas por fila (mismo estilo que el gauge de Budget). El

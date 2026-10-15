@@ -95,7 +95,7 @@ export function buildTopModelsWidgetLines(options: {
     nameWidth + 1 + spendWidth + 1 + WIDGET_PCT_WIDTH + 1 + 1 + 8;
 
   const lines: string[] = [
-    `Top models (${options.windowLabel})${titleSpendPart}`,
+    `Top models (${options.windowLabel}, UTC days)${titleSpendPart}`,
   ];
   // "=" rule under the title, spanning the full rendered row width (the %
   // sign and the space before the gauge count as cells).

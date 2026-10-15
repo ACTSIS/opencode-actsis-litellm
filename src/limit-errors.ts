@@ -1,4 +1,5 @@
 import { budgetUsagePercent } from "./budget.ts";
+import { formatLocalDateTime } from "./datetime.ts";
 
 export { budgetUsagePercent };
 
@@ -166,14 +167,10 @@ export function formatThrottleWarning(info: LimitErrorInfo): string {
   const prefix = limitType
     ? `Rate limit reached ${limitType}`
     : "Rate limit reached";
-  if (info.resetsAt) {
-    const resetsLocal = new Date(info.resetsAt);
+  const time = formatLocalDateTime(info.resetsAt);
+  if (info.resetsAt !== undefined && time) {
     const now = Date.now();
     const minutes = Math.max(0, Math.ceil((info.resetsAt - now) / 60_000));
-    const time = resetsLocal.toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
     return `${prefix}. Resets at ${time} (~${minutes} min). OpenCode will retry automatically.`;
   }
   return `${prefix}. OpenCode will retry automatically.`;

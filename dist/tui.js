@@ -114,7 +114,7 @@ function buildTopModelsWidgetLines(options) {
   );
   const tableWidth = nameWidth + 1 + spendWidth + 1 + WIDGET_PCT_WIDTH + 1 + 1 + 8;
   const lines = [
-    `Top models (${options.windowLabel})${titleSpendPart}`
+    `Top models (${options.windowLabel}, UTC days)${titleSpendPart}`
   ];
   lines.push("=".repeat(tableWidth));
   for (const row of rows) {

@@ -261,7 +261,7 @@ export function buildCommandDefinitions(existing?: Array<{ name: string }>): Com
   const all: CommandDefinition[] = [
     {
       name: "actsis-litellm-status",
-      description: "Show LiteLLM gateway status and model cache state.",
+      description: "Show LiteLLM gateway status and cache state (dates in system timezone).",
       template: "Use the actsis_litellm_status tool, then summarize its result for the user.",
     },
     {
@@ -276,19 +276,19 @@ export function buildCommandDefinitions(existing?: Array<{ name: string }>): Com
     },
     {
       name: "actsis-litellm-usage",
-      description: "Show per-model usage (spend/tokens/requests); args: [days] or 'YYYY-MM-DD .. YYYY-MM-DD'",
+      description: "Show per-model usage (spend/tokens/requests, UTC date ranges); args: [days] or 'YYYY-MM-DD .. YYYY-MM-DD'",
       template:
         "Use the actsis_litellm_usage tool, passing any window argument the user gave (a day count like 14, or a range like 2025-03-01 .. 2025-03-31) as its args input; omit args for the default last 30 days. Then summarize its result for the user.",
     },
     {
       name: "actsis-litellm-usage-subs",
-      description: "Show per-subscription Ollama Cloud usage (5h rolling + weekly)",
+      description: "Show per-subscription Ollama Cloud usage (system-local generation date; reset countdowns: 5h hours/minutes, weekly days/hours)",
       template:
         "Use the actsis_litellm_usage_subs tool, then summarize its result for the user.",
     },
     {
       name: "actsis-litellm-top",
-      description: "Enable, disable or toggle the Top-5 spend widget (args: on | off | toggle; omit to toggle).",
+      description: "Enable, disable or toggle the Top-5 spend widget (7 UTC days; args: on | off | toggle; omit to toggle).",
       template:
         "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then summarize its result for the user.",
     },

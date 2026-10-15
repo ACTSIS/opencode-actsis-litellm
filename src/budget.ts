@@ -1,4 +1,5 @@
 import { AuthError, CatalogError } from "./errors.ts";
+import { formatLocalDateTime } from "./datetime.ts";
 import { fetchFailureMessage } from "./network-error.ts";
 
 export interface BudgetInfo {
@@ -267,11 +268,8 @@ export function formatBudgetLine(info: BudgetInfo): string | null {
     line += ` | RPM ${info.rpmLimit.toLocaleString("en-US")}`;
   }
   if (info.budgetResetAt !== null) {
-    const time = new Date(info.budgetResetAt).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-    line += ` | resets ${time}`;
+    const time = formatLocalDateTime(info.budgetResetAt);
+    if (time) line += ` | resets ${time}`;
   }
   return line;
 }

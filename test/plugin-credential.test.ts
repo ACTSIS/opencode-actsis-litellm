@@ -91,6 +91,7 @@ describe("tools: integration credential reader (v2)", () => {
     if (savedEnv.dataHome !== undefined) process.env.XDG_DATA_HOME = savedEnv.dataHome;
     else delete process.env.XDG_DATA_HOME;
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
     await rm(tmpDir, { recursive: true, force: true });
   });
 
@@ -158,12 +159,13 @@ describe("tools: integration credential reader (v2)", () => {
     await writeFile(authPath, JSON.stringify({ "actsis-litellm": { type: "api", key: "sk-v1-stale" } }));
     vi.stubGlobal("fetch", stubBudgetFetch(1.23));
 
-    const cred = oauthCred();
+    vi.stubEnv("TZ", "America/Bogota");
+    const cred = oauthCred({ expires: Date.parse("2030-10-14T03:30:00Z") });
     const deps = makeDeps(async () => cred);
     const status = buildLitellmToolInfos(deps).find((t) => t.name === "actsis_litellm_status")!;
     const result = (await status.execute({}, makeToolContext())) as { content: string };
 
-    expect(result.content).toContain(`Auth: oauth (expires ${new Date((cred.expires as number)).toISOString()})`);
+    expect(result.content).toContain("Auth: oauth (expires 2030-10-13 22:30 (America/Bogota, GMT-05:00))");
     expect(result.content).toContain("Budget: $1.23 / $100.00 used (1%)");
   });
 

@@ -1310,6 +1310,26 @@ async function fetchCatalogModels(config, apiKey, signal, fetchImpl = globalThis
   ]);
 }
 
+// src/datetime.ts
+function formatLocalDateTime(value) {
+  if (value === null || value === void 0) return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  const formatter = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZoneName: "longOffset"
+  });
+  const parts = formatter.formatToParts(date);
+  const part = (type) => parts.find((p) => p.type === type)?.value ?? "";
+  const offset = part("timeZoneName").replace(/^GMT$/, "GMT+00:00");
+  return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")} (${formatter.resolvedOptions().timeZone}, ${offset})`;
+}
+
 // src/budget.ts
 function parseBudgetResetAt(value) {
   if (value === void 0 || value === null) return null;
@@ -1481,11 +1501,8 @@ function formatBudgetLine(info) {
     line += ` | RPM ${info.rpmLimit.toLocaleString("en-US")}`;
   }
   if (info.budgetResetAt !== null) {
-    const time = new Date(info.budgetResetAt).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit"
-    });
-    line += ` | resets ${time}`;
+    const time = formatLocalDateTime(info.budgetResetAt);
+    if (time) line += ` | resets ${time}`;
   }
   return line;
 }
@@ -1612,14 +1629,10 @@ function formatBudgetWarning(info) {
 function formatThrottleWarning(info) {
   const limitType = info.limitType ? `(${info.limitType})` : "";
   const prefix = limitType ? `Rate limit reached ${limitType}` : "Rate limit reached";
-  if (info.resetsAt) {
-    const resetsLocal = new Date(info.resetsAt);
+  const time = formatLocalDateTime(info.resetsAt);
+  if (info.resetsAt !== void 0 && time) {
     const now = Date.now();
     const minutes = Math.max(0, Math.ceil((info.resetsAt - now) / 6e4));
-    const time = resetsLocal.toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit"
-    });
     return `${prefix}. Resets at ${time} (~${minutes} min). OpenCode will retry automatically.`;
   }
   return `${prefix}. OpenCode will retry automatically.`;
@@ -2240,7 +2253,7 @@ function buildTable(entries, totalsSpend, totals) {
 function formatUsageTable(summary, options = {}) {
   const lines = [];
   const totalSpend = summary.totals.spend ?? 0;
-  const header = `Usage ${summary.startDate} \u2192 ${summary.endDate} (${rangeLengthDays(summary)} days): $${totalSpend.toFixed(4)}`;
+  const header = `Usage ${summary.startDate} \u2192 ${summary.endDate} (${rangeLengthDays(summary)} UTC days): $${totalSpend.toFixed(4)}`;
   lines.push(header);
   if (summary.models.length === 0) {
     lines.push("(no logged model usage in this range)");
@@ -2276,6 +2289,203 @@ function computeTopModelRows(summary, publicIds) {
     rows: display.models.slice(0, TOP_MODELS_ROW_LIMIT).map((m) => ({ model: m.model, spend: m.spend ?? 0 })),
     totalSpend: display.totals.spend ?? 0
   };
+}
+
+// src/usage-subs.ts
+var GAUGE_COLORS = {
+  green: "38;2;34;197;94",
+  yellow: "38;2;234;179;8",
+  orange: "38;2;249;115;22",
+  red: "38;2;239;68;68"
+};
+function gaugeColorAnsi(usedPercent) {
+  const color = usedPercent <= 50 ? GAUGE_COLORS.green : usedPercent <= 75 ? GAUGE_COLORS.yellow : usedPercent <= 90 ? GAUGE_COLORS.orange : GAUGE_COLORS.red;
+  return `\x1B[${color}m`;
+}
+var ANSI_SGR = /\x1b\[[0-9;]*m/g;
+function visibleLength(cell) {
+  return cell.replace(ANSI_SGR, "").length;
+}
+function usageGauge(percent, cells = 8) {
+  const clamped = Math.max(0, Math.min(100, percent));
+  const filled = Math.round(clamped / 100 * cells);
+  return "\u25B0".repeat(filled) + "\u25B1".repeat(cells - filled);
+}
+function asRecord3(value) {
+  return typeof value === "object" && value !== null ? value : {};
+}
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+function asNullableNumber3(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
+}
+function asString(value) {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+function asWindowUsage(value) {
+  const record = asRecord3(value);
+  return {
+    usageUsd: asNullableNumber3(record.usageUsd),
+    limitUsd: asNullableNumber3(record.limitUsd),
+    requests: asNullableNumber3(record.requests),
+    inputTokens: asNullableNumber3(record.inputTokens),
+    outputTokens: asNullableNumber3(record.outputTokens),
+    from: asString(record.from),
+    until: asString(record.until)
+  };
+}
+function asQuota(value) {
+  const record = asRecord3(value);
+  if (record.remainingPercent === void 0) return null;
+  return {
+    remainingPercent: asNullableNumber3(record.remainingPercent),
+    resetsAt: asString(record.resetsAt)
+  };
+}
+function asCredits(value) {
+  const record = asRecord3(value);
+  return {
+    includedUsd: asNullableNumber3(record.includedUsd),
+    includedBalanceUsd: asNullableNumber3(record.includedBalanceUsd),
+    purchasedUsd: asNullableNumber3(record.purchasedUsd),
+    session: asQuota(record.session),
+    weekly: asQuota(record.weekly)
+  };
+}
+function asSubscription(value) {
+  const record = asRecord3(value);
+  return {
+    name: asString(record.name) ?? "unknown",
+    plan: asString(record.plan),
+    session5h: asWindowUsage(record.session5h),
+    weekly: asWindowUsage(record.weekly),
+    credits: asCredits(record.credits),
+    error: asString(record.error)
+  };
+}
+function parseUsageSubscriptions(body) {
+  const record = asRecord3(body);
+  return {
+    generatedAt: asString(record.generatedAt),
+    subscriptions: asArray(record.subscriptions).map(asSubscription)
+  };
+}
+async function fetchUsageSubs(gatewayUrl, apiKey, timeoutMs, fetchImpl = globalThis.fetch) {
+  const normalized = gatewayUrl.replace(/\/+$/, "");
+  const url = `${normalized}/ollama-usage`;
+  let response;
+  try {
+    response = await fetchImpl(url, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+  } catch (err) {
+    throw new CatalogError(
+      `Failed to fetch usage-subs: ${fetchFailureMessage(err)}`,
+      { cause: err }
+    );
+  }
+  if (response.status === 404) {
+    throw new CatalogError("usage-subs endpoint not available");
+  }
+  if (response.status === 401) {
+    throw new AuthError("Credential rejected by gateway. Run /login again.");
+  }
+  if (response.status === 403) {
+    throw new AuthError(
+      "Gateway denied access to usage-subs (403): this credential lacks the spend/usage routes permission. Ask a gateway admin to grant it."
+    );
+  }
+  if (!response.ok) {
+    throw new CatalogError(
+      `Failed to fetch usage-subs: ${response.status}: ${response.statusText}`
+    );
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch (err) {
+    throw new CatalogError(
+      `Failed to fetch usage-subs: response was not valid JSON`,
+      { cause: err }
+    );
+  }
+  return parseUsageSubscriptions(body);
+}
+function formatWindowCell(window, quota, color) {
+  const usage = window.usageUsd ?? 0;
+  const requests = window.requests ?? 0;
+  if (quota != null && quota.remainingPercent != null) {
+    const used = Math.min(100, Math.max(0, 100 - quota.remainingPercent));
+    const run = `${usageGauge(used)} ${Math.round(used)}% ${requests.toLocaleString("en-US")} reqs`;
+    return color ? `${gaugeColorAnsi(used)}${run}\x1B[2;39m` : run;
+  }
+  const tokens = (window.inputTokens ?? 0) + (window.outputTokens ?? 0);
+  if (window.limitUsd != null) {
+    const limit = window.limitUsd;
+    const percent = limit > 0 ? Math.min(100, Math.max(0, usage / limit * 100)) : usage > 0 ? 100 : 0;
+    const run = `${usageGauge(percent)} $${usage.toFixed(2)} / $${limit.toFixed(2)}`;
+    return color ? `${gaugeColorAnsi(percent)}${run}\x1B[2;39m` : run;
+  }
+  return `${requests.toLocaleString("en-US")} reqs \xB7 ${tokens.toLocaleString("en-US")} tok`;
+}
+function formatResetsCell(quota, weekly, now) {
+  const resetsAt = quota?.resetsAt;
+  if (!resetsAt) return "-";
+  const reset = Date.parse(resetsAt);
+  if (!Number.isFinite(reset)) return "-";
+  const remaining = Math.max(0, reset - now);
+  if (weekly) {
+    const hours = Math.ceil(remaining / 36e5);
+    return `${Math.floor(hours / 24)} d ${hours % 24} h`;
+  }
+  const minutes = Math.ceil(remaining / 6e4);
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+function creditsCell(credits) {
+  const parts = [];
+  if (credits.includedUsd != null) {
+    parts.push(`included $${credits.includedUsd.toFixed(2)}`);
+  }
+  if (credits.includedBalanceUsd != null) {
+    parts.push(`balance $${credits.includedBalanceUsd.toFixed(2)}`);
+  }
+  if (credits.purchasedUsd != null) {
+    parts.push(`purchased $${credits.purchasedUsd.toFixed(2)}`);
+  }
+  return parts.length > 0 ? parts.join(" \xB7 ") : null;
+}
+function formatUsageSubsLines(data, options = {}) {
+  const color = options.color === true;
+  const now = Date.now();
+  const lines = [];
+  const generatedAt = formatLocalDateTime(data.generatedAt) ?? "-";
+  lines.push(`Usage subscriptions (generated at ${generatedAt}):`);
+  if (data.subscriptions.length === 0) {
+    lines.push("(no subscriptions returned)");
+    return lines;
+  }
+  const header = ["Sub", "5h used", "5h resets in", "Weekly used", "Weekly resets in", "Credits"];
+  const rows = data.subscriptions.map((sub) => [
+    sub.plan ? `${sub.name} (${sub.plan})` : sub.name,
+    sub.error ? `(error: ${sub.error})` : formatWindowCell(sub.session5h, sub.credits.session, color),
+    sub.error ? "-" : formatResetsCell(sub.credits.session, false, now),
+    sub.error ? "-" : formatWindowCell(sub.weekly, sub.credits.weekly, color),
+    sub.error ? "-" : formatResetsCell(sub.credits.weekly, true, now),
+    sub.error ? "-" : creditsCell(sub.credits) ?? "-"
+  ]);
+  const width = header.map((_, i) => Math.max(header[i].length, ...rows.map((row) => visibleLength(row[i]))));
+  const renderRow = (cells) => cells.map(
+    (cell, i) => visibleLength(cell) < width[i] ? cell + " ".repeat(width[i] - visibleLength(cell)) : cell
+  ).join("  ").trimEnd();
+  lines.push(renderRow(header));
+  lines.push("-".repeat(renderRow(header).length));
+  for (const row of rows) {
+    lines.push(renderRow(row));
+  }
+  return lines;
 }
 
 // src/top-command.ts
@@ -2345,7 +2555,7 @@ function formatExpiry(entry) {
   if (!entry) return "never";
   if (entry.type === "api") return "never";
   if (!Number.isFinite(entry.expires)) return "never";
-  return new Date(entry.expires).toISOString();
+  return formatLocalDateTime(entry.expires) ?? "never";
 }
 var EMPTY_INPUT = { type: "object", properties: {}, additionalProperties: false };
 var USAGE_INPUT = {
@@ -2713,6 +2923,35 @@ function buildLitellmToolInfos(deps) {
       return `${formatTopToggleAnswer(parsed)}. Widget rows unavailable: ${reason}`;
     }
   };
+  const usageSubs = async () => {
+    const state = await readPluginState(stateDir);
+    const entry = await readEntry(deps);
+    if (!entry) {
+      return "Not signed in \u2014 run /login and choose ACTSIS LiteLLM.";
+    }
+    if (!state?.gatewayUrl) {
+      return "Gateway URL not configured.";
+    }
+    try {
+      const token = entry.type === "oauth" ? await ensureFreshToken(
+        { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+        {
+          state,
+          timeoutMs: timeout,
+          fetchImpl,
+          onRefreshed
+        }
+      ) : entry.key;
+      const data = await fetchUsageSubs(state.gatewayUrl, token, timeout, fetchImpl);
+      return formatUsageSubsLines(data, { color: true }).join("\n");
+    } catch (err) {
+      if (err instanceof AuthError) {
+        return err.message;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      return `Usage subscriptions unavailable: ${reason}`;
+    }
+  };
   const logout = async () => {
     const state = await readPluginState(stateDir);
     const entry = await readEntry(deps);
@@ -2744,7 +2983,7 @@ function buildLitellmToolInfos(deps) {
   return [
     {
       name: "actsis_litellm_status",
-      description: "Show LiteLLM gateway status, credential state, and model cache age.",
+      description: "Show LiteLLM gateway status, credential state, and cache age (dates in system timezone).",
       input: EMPTY_INPUT,
       async execute() {
         return { content: await status() };
@@ -2768,7 +3007,7 @@ function buildLitellmToolInfos(deps) {
     },
     {
       name: "actsis_litellm_usage",
-      description: "Show per-model usage from the LiteLLM gateway (spend, tokens, requests) for a window; supports day counts and explicit date ranges.",
+      description: "Show per-model usage from the LiteLLM gateway (spend, tokens, requests) for a UTC date window; supports day counts and explicit date ranges.",
       input: USAGE_INPUT,
       async execute(input) {
         const args = typeof input.args === "string" ? input.args : void 0;
@@ -2776,8 +3015,16 @@ function buildLitellmToolInfos(deps) {
       }
     },
     {
+      name: "actsis_litellm_usage_subs",
+      description: "Show per-subscription Ollama Cloud usage, credits and system-local generation date; reset countdowns: 5h hours/minutes, weekly days/hours.",
+      input: EMPTY_INPUT,
+      async execute() {
+        return { content: await usageSubs() };
+      }
+    },
+    {
       name: "actsis_litellm_top",
-      description: "Enable, disable, or toggle the Top-5 spend models TUI widget; persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows.",
+      description: "Enable, disable, or toggle the Top-5 spend models TUI widget (7 UTC days); persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows.",
       input: TOP_INPUT,
       async execute(input) {
         const args = typeof input.args === "string" ? input.args : void 0;
@@ -2930,7 +3177,7 @@ function buildCommandDefinitions(existing) {
   const all = [
     {
       name: "actsis-litellm-status",
-      description: "Show LiteLLM gateway status and model cache state.",
+      description: "Show LiteLLM gateway status and cache state (dates in system timezone).",
       template: "Use the actsis_litellm_status tool, then summarize its result for the user."
     },
     {
@@ -2945,12 +3192,17 @@ function buildCommandDefinitions(existing) {
     },
     {
       name: "actsis-litellm-usage",
-      description: "Show per-model usage (spend/tokens/requests); args: [days] or 'YYYY-MM-DD .. YYYY-MM-DD'",
+      description: "Show per-model usage (spend/tokens/requests, UTC date ranges); args: [days] or 'YYYY-MM-DD .. YYYY-MM-DD'",
       template: "Use the actsis_litellm_usage tool, passing any window argument the user gave (a day count like 14, or a range like 2025-03-01 .. 2025-03-31) as its args input; omit args for the default last 30 days. Then summarize its result for the user."
     },
     {
+      name: "actsis-litellm-usage-subs",
+      description: "Show per-subscription Ollama Cloud usage (system-local generation date; reset countdowns: 5h hours/minutes, weekly days/hours)",
+      template: "Use the actsis_litellm_usage_subs tool, then summarize its result for the user."
+    },
+    {
       name: "actsis-litellm-top",
-      description: "Enable, disable or toggle the Top-5 spend widget (args: on | off | toggle; omit to toggle).",
+      description: "Enable, disable or toggle the Top-5 spend widget (7 UTC days; args: on | off | toggle; omit to toggle).",
       template: "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then summarize its result for the user."
     },
     {

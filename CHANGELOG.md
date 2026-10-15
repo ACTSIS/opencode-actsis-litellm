@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- Fechas absolutas visibles en la zona del sistema, con fecha, reloj de 24 horas,
+  identificador de zona y offset, en paridad con pi-actsis-litellm.
+- Reinicios de suscripción como tiempo restante: horas/minutos para 5h y
+  días/horas para la ventana semanal; se conservan indicadores y créditos.
+- Rangos de consumo y Top models identificados como días UTC sin cambiar
+  los límites de consulta ni las duraciones.
+
 ## 0.5.0 — 2026-10-14 — Emparejada con pi-actsis-litellm
 
 - **Tool `actsis_litellm_usage_subs` + comando `/actsis-litellm-usage-subs`** —
