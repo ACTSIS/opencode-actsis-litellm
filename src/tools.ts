@@ -248,12 +248,12 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
           { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
           stateDir,
         );
-        const primary = formatBudgetLine(snapshot.primary);
+        const primary = formatBudgetLine(snapshot.primary, { color: true });
         if (primary) {
           budgetLines = [`Budget: ${primary}`];
           if (snapshot.source === "user_info") {
             for (const key of snapshot.ownKeys) {
-              const keyLine = formatBudgetLine(key);
+              const keyLine = formatBudgetLine(key, { color: true });
               if (keyLine) {
                 budgetLines.push(
                   key.keyAlias ? `Key ${key.keyAlias}: ${keyLine}` : `Key: ${keyLine}`,
@@ -326,7 +326,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
         { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
         stateDir,
       );
-      const text = formatBudgetStatus(snapshot.primary);
+      const text = formatBudgetStatus(snapshot.primary, { color: true });
       return text ?? "no spend data (spend null)";
     } catch (err) {
       if (err instanceof AuthError) {

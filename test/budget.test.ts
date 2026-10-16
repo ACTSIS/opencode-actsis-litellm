@@ -7,6 +7,11 @@ import {
   budgetGauge,
   budgetUsagePercent,
 } from "../src/budget.ts";
+import {
+  GAUGE_ANSI_RESET_DIM,
+  GAUGE_ANSI_RESET_FG,
+  gaugeColorAnsi,
+} from "../src/gauge-color.ts";
 import { AuthError, CatalogError } from "../src/errors.ts";
 
 describe("parseBudgetResetAt via fetchBudgetInfo", () => {
@@ -414,3 +419,99 @@ describe("formatBudgetLine", () => {
     );
   });
 });
+
+describe("gauge-color thresholds", () => {
+  it("selects green <=50, yellow <=75, orange <=90, red >90", () => {
+    expect(gaugeColorAnsi(0)).toBe("\x1b[38;2;34;197;94m");
+    expect(gaugeColorAnsi(50)).toBe("\x1b[38;2;34;197;94m");
+    expect(gaugeColorAnsi(51)).toBe("\x1b[38;2;234;179;8m");
+    expect(gaugeColorAnsi(75)).toBe("\x1b[38;2;234;179;8m");
+    expect(gaugeColorAnsi(76)).toBe("\x1b[38;2;249;115;22m");
+    expect(gaugeColorAnsi(90)).toBe("\x1b[38;2;249;115;22m");
+    expect(gaugeColorAnsi(91)).toBe("\x1b[38;2;239;68;68m");
+    expect(gaugeColorAnsi(100)).toBe("\x1b[38;2;239;68;68m");
+  });
+});
+
+describe("formatBudgetLine color option", () => {
+  it("colors the capped run at the used% threshold", () => {
+    expect(
+      formatBudgetLine(
+        { spend: 95, maxBudget: 100, tpmLimit: null, rpmLimit: null, budgetResetAt: null, keyAlias: null },
+        { color: true },
+      ),
+    ).toBe(`\x1b[38;2;239;68;68m$95.00 / $100.00 used (95%)${GAUGE_ANSI_RESET_DIM}`);
+  });
+
+  it("keeps the TPM/RPM/reset suffixes outside the colored run", () => {
+    const resetAt = new Date("2026-12-25T12:00:00.000Z").getTime();
+    const line = formatBudgetLine(
+      { spend: 50, maxBudget: 100, tpmLimit: 2_000_000, rpmLimit: 600, budgetResetAt: resetAt, keyAlias: null },
+      { color: true },
+    );
+    expect(line).toContain(`${gaugeColorAnsi(50)}$50.00 / $100.00 used (50%)${GAUGE_ANSI_RESET_DIM} | TPM 2,000,000 | RPM 600 | resets `);
+  });
+
+  it("stays neutral without a cap even when color is requested", () => {
+    expect(
+      formatBudgetLine(
+        { spend: 90, maxBudget: null, tpmLimit: null, rpmLimit: null, budgetResetAt: null, keyAlias: null },
+        { color: true },
+      ),
+    ).toBe("$90.00 used (no budget cap)");
+  });
+
+  it("keeps the plain form byte-identical when color is omitted", () => {
+    const info = { spend: 12.34, maxBudget: 100, tpmLimit: null, rpmLimit: null, budgetResetAt: null, keyAlias: null };
+    expect(formatBudgetLine(info, {})).toBe(formatBudgetLine(info));
+    expect(formatBudgetLine(info, { color: false })).toBe(formatBudgetLine(info));
+  });
+});
+
+describe("formatBudgetStatus color option", () => {
+  it("colors the gauge+percent run by threshold", () => {
+    expect(
+      formatBudgetStatus(
+        { spend: 2.5, maxBudget: 10, tpmLimit: null, rpmLimit: null, budgetResetAt: null, keyAlias: null },
+        { color: true },
+      ),
+    ).toBe(`Budget ${gaugeColorAnsi(25)}\u25b0\u25b0\u25b1\u25b1\u25b1\u25b1\u25b1\u25b1 25%${GAUGE_ANSI_RESET_FG} \u00b7 $2.50/$10.00`);
+  });
+
+  it("crosses thresholds as used% rises", () => {
+    const status = (spend: number, maxBudget: number) =>
+      formatBudgetStatus(
+        { spend, maxBudget, tpmLimit: null, rpmLimit: null, budgetResetAt: null, keyAlias: null },
+        { color: true },
+      );
+    expect(formatBudgetStatus({ ...baseInfo(5, 10) }, { color: true })).toContain(gaugeColorAnsi(50));
+    expect(formatBudgetStatus({ ...baseInfo(5.1, 10) }, { color: true })).toContain(gaugeColorAnsi(51));
+    expect(formatBudgetStatus({ ...baseInfo(7.5, 10) }, { color: true })).toContain(gaugeColorAnsi(75));
+    expect(formatBudgetStatus({ ...baseInfo(7.6, 10) }, { color: true })).toContain(gaugeColorAnsi(76));
+    expect(formatBudgetStatus({ ...baseInfo(9, 10) }, { color: true })).toContain(gaugeColorAnsi(90));
+    expect(formatBudgetStatus({ ...baseInfo(9.1, 10) }, { color: true })).toContain(gaugeColorAnsi(91));
+  });
+
+  it("mirrors the plain widget text without color", () => {
+    expect(
+      formatBudgetStatus(
+        { spend: 12.34, maxBudget: 100, tpmLimit: null, rpmLimit: null, budgetResetAt: null, keyAlias: null },
+      ),
+    ).toBe("Budget \u25b0\u25b1\u25b1\u25b1\u25b1\u25b1\u25b1\u25b1 12% \u00b7 $12.34/$100.00");
+  });
+
+  it("stays neutral with color when the cap is zero, negative, or missing", () => {
+    const text = formatBudgetStatus(
+      { spend: 5, maxBudget: null, tpmLimit: null, rpmLimit: null, budgetResetAt: null, keyAlias: null },
+      { color: true },
+    );
+    expect(text).toBe("Budget $5.00 used (no cap)");
+    expect(text).not.toContain("\x1b[");
+    expect(formatBudgetStatus({ ...baseInfo(5, 0) }, { color: true })).not.toContain("\x1b[");
+    expect(formatBudgetStatus({ ...baseInfo(5, -10) }, { color: true })).not.toContain("\x1b[");
+  });
+});
+
+function baseInfo(spend: number, maxBudget: number | null) {
+  return { spend, maxBudget, tpmLimit: null, rpmLimit: null, budgetResetAt: null, keyAlias: null };
+}

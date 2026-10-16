@@ -10,6 +10,8 @@ import {
   type PluginClosure,
   type SetupContext,
 } from "../src/plugin.ts";
+import { gaugeColorAnsi, GAUGE_ANSI_RESET_DIM, GAUGE_ANSI_RESET_FG } from "../src/gauge-color.ts";
+import { budgetGauge } from "../src/budget.ts";
 import { buildLitellmToolInfos, resolveToolToken, type ToolDeps } from "../src/tools.ts";
 import { readPluginState, writePluginState } from "../src/state.ts";
 import { defaultAuthPath } from "../src/auth-store.ts";
@@ -166,7 +168,7 @@ describe("tools: integration credential reader (v2)", () => {
     const result = (await status.execute({}, makeToolContext())) as { content: string };
 
     expect(result.content).toContain("Auth: oauth (expires 2030-10-13 22:30 (America/Bogota, GMT-05:00))");
-    expect(result.content).toContain("Budget: $1.23 / $100.00 used (1%)");
+    expect(result.content).toContain(`Budget: ${gaugeColorAnsi(1)}$1.23 / $100.00 used (1%)${GAUGE_ANSI_RESET_DIM}`);
   });
 
   it("budget uses the integration credential", async () => {
@@ -176,7 +178,7 @@ describe("tools: integration credential reader (v2)", () => {
     const deps = makeDeps(async () => ({ type: "key", key: "sk-v2" }));
     const budget = buildLitellmToolInfos(deps).find((t) => t.name === "actsis_litellm_budget")!;
     const result = (await budget.execute({}, makeToolContext())) as { content: string };
-    expect(result.content).toMatch(/Budget .*2% · \$2\.34\/\$100\.00/);
+    expect(result.content).toBe(`Budget \x1b[38;2;34;197;94m\u25b1\u25b1\u25b1\u25b1\u25b1\u25b1\u25b1\u25b1 2%\x1b[39m \u00b7 $2.34/$100.00`);
   });
 
   it("models syncs the catalog through the integration credential", async () => {
@@ -487,6 +489,6 @@ describe("server plugin: credential reader flows through setup into tools, model
     };
     const result = await status.execute({}, undefined);
     expect(result.content).toContain("Auth: oauth");
-    expect(result.content).toContain("Budget: $5.55 / $100.00 used (6%)");
+    expect(result.content).toContain(`Budget: ${gaugeColorAnsi(6)}$5.55 / $100.00 used (6%)${GAUGE_ANSI_RESET_DIM}`);
   });
 });
