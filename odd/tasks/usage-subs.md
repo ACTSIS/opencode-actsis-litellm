@@ -76,3 +76,14 @@ querying the gateway's `/ollama-usage` pass-through. Contract lives in
   corchetes normales, con test de reproducción del texto exacto almacenado.
   Typecheck OK, 479/479 tests, dist regenerado. Pendiente: verificación visual
   del usuario tras reiniciar la TUI.
+- L12 (2026-10-16): entregado issue#24 → rama bugfix/widget-chat-color
+  (5e010d1 widget segments; d01d088 ansi renderer + fragment parsing + templates
+  + docs) → PR #25 → merge be9f323 a main. Verificación en vivo del usuario:
+  widget OK; fence ansi del chat pendiente de reconfirmar. Release v0.6.3
+  preparada en main (sin tag); corte/etiquetado espejado con pi pendiente de
+  decisión.
+- L13 (2026-10-16, verificación visual del usuario con captura): "Todo quedó
+  maravillosamente bien" — widget Budget coloreado por banda, fences `ansi` del
+  chat pintando truecolor (uso-subs verde/amarillo/naranja/rojo y budget),
+  templates exigiendo el ansi info string funcionando en vivo. Feature color
+  cerrada; release v0.6.3 queda etiquetada en el corte de par pendiente.
