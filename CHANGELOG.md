@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.3 — 2026-10-16 — Emparejada con pi-actsis-litellm
+
+- Añadido: **colores por umbral en las líneas de budget de los tools** — la
+  paleta truecolor quedó compartida en `src/gauge-color.ts` (antes duplicada),
+  `formatBudgetLine` y `formatBudgetStatus` aceptan `{color: true}` y el
+  `actsis_litellm_budget`, las líneas por-key y el snapshot vivo de
+  `actsis_litellm_status` la usan (verde ≤50 %, amarillo 51–75 %, naranja
+  76–90 %, rojo >90 %). Sin cap queda neutro; errores y fallbacks "last known"
+  siguen en texto plano; los sufijos TPM/RPM/resets van fuera del run
+  coloreado. La salida sin color es byte-idéntica. Espejo de
+  pi-actsis-litellm#35 (PRs #37/#38); issue #21, PR #22.
+- El widget de la TUI sigue plano: el renderer de opentui no tiene
+  confirmación visual de SGR en este repo (documentado en el README).
+
 ## 0.6.2 — 2026-10-15 — Emparejada con pi-actsis-litellm
 
 - Corregido: **ritmo de ventana en `usage_subs`** — el collector en vivo envía
