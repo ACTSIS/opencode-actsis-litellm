@@ -1,27 +1,12 @@
 import { AuthError, CatalogError } from "./errors.ts";
 import { formatLocalDateTime } from "./datetime.ts";
 import { fetchFailureMessage } from "./network-error.ts";
+import { GAUGE_ANSI_RESET_DIM, gaugeColorAnsi } from "./gauge-color.ts";
 /**
- * ANSI truecolor palettes for the usage gauge thresholds. Mirrors the pi
- * sibling; colors stay opt-in ({color: true}) and NOT wired here yet: tool
- * output surfaces in opencode render without an ANSI guarantee, so the
- * (opencode-side) colors must be visually confirmed before wiring.
+ * Gauge threshold palette lives in ./gauge-color.ts (shared with the budget
+ * tool lines): the colors are opt-in ({color: true}) and the usage_subs tool
+ * output renders them (wired at tools.ts). Mirrors the pi sibling.
  */
-const GAUGE_COLORS = {
-  green: "38;2;34;197;94",
-  yellow: "38;2;234;179;8",
-  orange: "38;2;249;115;22",
-  red: "38;2;239;68;68",
-} as const;
-
-/** Thresholds over used%: <=50 green, 51-75 yellow, 76-90 orange, >90 red. */
-function gaugeColorAnsi(usedPercent: number): string {
-  const color = usedPercent <= 50 ? GAUGE_COLORS.green
-    : usedPercent <= 75 ? GAUGE_COLORS.yellow
-    : usedPercent <= 90 ? GAUGE_COLORS.orange
-    : GAUGE_COLORS.red;
-  return `\x1b[${color}m`;
-}
 
 /** Fixed window lengths of the Ollama subscription quotas. Mirrors the pi sibling. */
 const SESSION_WINDOW_MS = 5 * 3_600_000;
@@ -321,7 +306,7 @@ function formatWindowCell(
     const ahead = pace != null && pace > 1;
     const run = `${usageGauge(used)} ${Math.round(used)}%${paceProjectionSuffix(used, elapsed)} ${requests.toLocaleString("en-US")} reqs`;
     return color
-      ? `${gaugeColorAnsi(escalatedUsedPercent(used, ahead))}${run}\x1b[2;39m`
+      ? `${gaugeColorAnsi(escalatedUsedPercent(used, ahead))}${run}${GAUGE_ANSI_RESET_DIM}`
       : run;
   }
 
@@ -339,7 +324,7 @@ function formatWindowCell(
     const ahead = pace != null && pace > 1;
     const run = `${usageGauge(percent)} $${usage.toFixed(2)} / $${limit.toFixed(2)}${paceProjectionSuffix(percent, elapsed)}`;
     return color
-      ? `${gaugeColorAnsi(escalatedUsedPercent(percent, ahead))}${run}\x1b[2;39m`
+      ? `${gaugeColorAnsi(escalatedUsedPercent(percent, ahead))}${run}${GAUGE_ANSI_RESET_DIM}`
       : run;
   }
 

@@ -145,8 +145,8 @@ disponible.
 
 | Tool | Comando | Descripción |
 |------|---------|-------------|
-| `actsis_litellm_status` | `/actsis-litellm-status` | Muestra estado de credenciales, antigüedad y tamaño del caché del catálogo, URL del gateway e información de budget (recurre al último snapshot cacheado entre turnos). |
-| `actsis_litellm_budget` | `/actsis-litellm-budget` | Fuerza una actualización del budget y reporta el resultado exacto (línea de gauge o el motivo preciso del fallo, además del último snapshot conocido cuando la lectura en vivo falla). |
+| `actsis_litellm_status` | `/actsis-litellm-status` | Muestra estado de credenciales, antigüedad y tamaño del caché del catálogo, URL del gateway e información de budget (recurre al último snapshot cacheado entre turnos). El snapshot vivo del budget lleva indicador coloreado por umbral de uso (verde ≤50 %, amarillo 51–75 %, naranja 76–90 %, rojo >90 %); los fallbacks de error/quedada quedan en texto plano. |
+| `actsis_litellm_budget` | `/actsis-litellm-budget` | Fuerza una actualización del budget y reporta el resultado exacto (línea del run `$X / $Y used (NN%)` coloreada por umbral de uso — verde ≤50 %, amarillo 51–75 %, naranja 76–90 %, rojo >90 % — o el motivo preciso del fallo en texto plano, además del último snapshot conocido cuando la lectura en vivo falla). |
 | `actsis_litellm_models` | `/actsis-litellm-models` | Fuerza una sincronización fresca del catálogo de modelos y reporta modelos agregados/eliminados. |
 | `actsis_litellm_usage` | `/actsis-litellm-usage` | Muestra gasto, tokens y peticiones por modelo para una ventana: sin argumentos (últimos 30 días), un número de días (`14`) o un rango explícito (`2025-03-01 .. 2025-03-31`). Ver [Uso por modelo](#uso-por-modelo). |
 | `actsis_litellm_usage_subs` | `/actsis-litellm-usage-subs` | Muestra, por cada suscripción de Ollama Cloud, el porcentaje restante de la ventana de 5 horas y de la ventana semanal con el tiempo restante hasta el reinicio y los créditos, en formato tabular y con indicadores coloreados por nivel de uso, correlacionados con la ventana transcurrida (escalamiento por ritmo y proyección cuando el consumo va adelantado). Ver [Uso por suscripción](#uso-por-suscripción). |
@@ -262,7 +262,12 @@ Sub  5h used                5h resets in  Weekly used               Weekly reset
 ## Widget de la TUI
 
 Un widget opcional de la TUI renderiza el gauge de budget en el pie de la
-barra lateral de OpenCode. Se activa agregando el spec del paquete al array
+barra lateral de OpenCode (y las Top-5 de modelos cuando el `widget top` está
+activo). El gauge de la TUI se renderiza **sin color**: el renderer de opentui
+no tiene confirmación visual de SGR en este repo, así que la línea de budget
+viaja en forma plana; el color por umbral vive en las superficies del tool
+(`actsis_litellm_budget` y el snapshot vivo de `actsis_litellm_status`), que
+sí renderizan SGR — mismo estándar probado por `actsis_litellm_usage_subs`. Se activa agregando el spec del paquete al array
 `plugins` de `~/.config/opencode/cli.json` — **además de** la entrada en
 `opencode.json`; ambos archivos de configuración son necesarios (ver
 [docs/installation.md](docs/installation.md)).

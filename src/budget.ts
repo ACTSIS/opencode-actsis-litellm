@@ -1,6 +1,11 @@
 import { AuthError, CatalogError } from "./errors.ts";
 import { formatLocalDateTime } from "./datetime.ts";
 import { fetchFailureMessage } from "./network-error.ts";
+import {
+  GAUGE_ANSI_RESET_DIM,
+  GAUGE_ANSI_RESET_FG,
+  gaugeColorAnsi,
+} from "./gauge-color.ts";
 
 export interface BudgetInfo {
   spend: number | null;
@@ -242,25 +247,52 @@ export function budgetGauge(percent: number): string {
   return GAUGE_FILLED.repeat(filled) + GAUGE_EMPTY.repeat(GAUGE_CELLS - filled);
 }
 
-export function formatBudgetStatus(info: BudgetInfo): string | undefined {
+/**
+ * Widget/status text, in /usage's gauge-or-absolute discipline. With
+ * {color: true} the gauge+percent run carries the shared ANSI threshold
+ * palette. No pace escalation (unlike the /usage-subs windows):
+ * budgetResetAt marks the next reset but the budget window span is unknown,
+ * so plain thresholds apply. Callers whose renderer strips SGR (e.g. the
+ * opentui widget) keep the plain form. Plain output stays byte-identical
+ * when color is omitted.
+ */
+export function formatBudgetStatus(
+  info: BudgetInfo,
+  options: { color?: boolean } = {},
+): string | undefined {
   if (info.spend === null) return undefined;
   const spend = `$${info.spend.toFixed(2)}`;
   if (info.maxBudget !== null && info.maxBudget > 0) {
     const percent = budgetUsagePercent(info.spend, info.maxBudget);
     const cap = `$${info.maxBudget.toFixed(2)}`;
-    return `Budget ${budgetGauge(percent)} ${Math.round(percent)}% · ${spend}/${cap}`;
+    const run = `${budgetGauge(percent)} ${Math.round(percent)}%`;
+    const colored = options.color === true
+      ? `${gaugeColorAnsi(percent)}${run}${GAUGE_ANSI_RESET_FG}`
+      : run;
+    return `Budget ${colored} · ${spend}/${cap}`;
   }
   return `Budget ${spend} used (no cap)`;
 }
 
-export function formatBudgetLine(info: BudgetInfo): string | null {
+export function formatBudgetLine(
+  info: BudgetInfo,
+  options: { color?: boolean } = {},
+): string | null {
   if (info.spend === null) return null;
   const percent = budgetUsagePercent(info.spend, info.maxBudget);
-  const capPart =
-    info.maxBudget !== null
-      ? ` / $${info.maxBudget.toFixed(2)} used (${Math.round(percent)}%)`
-      : ` used (no budget cap)`;
+  const maxBudget = info.maxBudget;
+  const hasCap = maxBudget !== null;
+  const capPart = hasCap
+    ? ` / $${maxBudget.toFixed(2)} used (${Math.round(percent)}%)`
+    : ` used (no budget cap)`;
   let line = `$${info.spend.toFixed(2)}${capPart}`;
+  // In /usage's gauge-or-absolute discipline the capped run carries the
+  // threshold color; without a cap there is no percent to signal, so the
+  // line stays neutral. TPM/RPM limits and the reset suffix stay outside
+  // the colored run.
+  if (hasCap && options.color === true) {
+    line = `${gaugeColorAnsi(percent)}${line}${GAUGE_ANSI_RESET_DIM}`;
+  }
   if (info.tpmLimit !== null) {
     line += ` | TPM ${info.tpmLimit.toLocaleString("en-US")}`;
   }

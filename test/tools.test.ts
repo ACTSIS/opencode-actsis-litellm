@@ -6,6 +6,8 @@ import { buildLitellmToolInfos, resolveToolToken, type ToolDeps } from "../src/t
 import { readPluginState, writePluginState } from "../src/state.ts";
 import { defaultAuthPath } from "../src/auth-store.ts";
 import type { ToolContext } from "@opencode/plugin/promise/tool";
+import { gaugeColorAnsi, GAUGE_ANSI_RESET_DIM, GAUGE_ANSI_RESET_FG } from "../src/gauge-color.ts";
+import { budgetGauge } from "../src/budget.ts";
 
 function makeToolContext(): ToolContext {
   return {
@@ -297,7 +299,7 @@ describe("actsis_litellm_status", () => {
     expect(result.content).toContain("Auth: oauth");
     expect(result.content).toContain("Catalog: 1 models cached");
     expect(result.content).toContain("Gateway URL: https://gw.example.com");
-    expect(result.content).toContain("Budget: $1.23 / $10.00 used (12%)");
+    expect(result.content).toContain(`Budget: ${gaugeColorAnsi(12)}$1.23 / $10.00 used (12%)${GAUGE_ANSI_RESET_DIM}`);
   });
 
   it("refreshes OAuth and shows the caller's key budget with own keys only", async () => {
@@ -369,7 +371,9 @@ describe("actsis_litellm_status", () => {
     expect(result.content).toContain(
       "Budget: $29.90 used (no budget cap) | TPM 2,000,000 | RPM 600",
     );
-    expect(result.content).toContain("Key RPINTO: $158.72 / $100.00 used (159%)");
+    expect(result.content).toContain(
+      `Key RPINTO: ${gaugeColorAnsi(159)}$158.72 / $100.00 used (159%)${GAUGE_ANSI_RESET_DIM}`,
+    );
     expect(result.content).not.toContain("OTHER");
   });
 });
@@ -404,7 +408,7 @@ describe("actsis_litellm_budget", () => {
 
     const fetchImpl = stubGateway(12.34, 100);
     const result = await budgetExecute(fetchImpl)({});
-    expect(result.content).toMatch(/Budget .*12% · \$12\.34\/\$100\.00/);
+    expect(result.content).toBe(`Budget \x1b[38;2;34;197;94m\u25b0\u25b1\u25b1\u25b1\u25b1\u25b1\u25b1\u25b1 12%\x1b[39m \u00b7 $12.34/$100.00`);
   });
 
   it("returns no-spend-data when spend is null", async () => {
@@ -434,7 +438,7 @@ describe("actsis_litellm_budget", () => {
 
     const fetchImpl = stubGateway(4.56, 50);
     const result = await budgetExecute(fetchImpl)({});
-    expect(result.content).toMatch(/Budget .*9% · \$4\.56\/\$50\.00/);
+    expect(result.content).toBe(`Budget \x1b[38;2;34;197;94m\u25b0\u25b1\u25b1\u25b1\u25b1\u25b1\u25b1\u25b1 9%\x1b[39m \u00b7 $4.56/$50.00`);
 
     const state = await readPluginState(tmpDir);
     expect(state?.lastBudgetSnapshot?.primary.spend).toBe(4.56);
