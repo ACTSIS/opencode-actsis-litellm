@@ -87,3 +87,9 @@ querying the gateway's `/ollama-usage` pass-through. Contract lives in
   chat pintando truecolor (uso-subs verde/amarillo/naranja/rojo y budget),
   templates exigiendo el ansi info string funcionando en vivo. Feature color
   cerrada; release v0.6.3 queda etiquetada en el corte de par pendiente.
+- L14 (2026-10-16, corte de par): v0.6.3 etiquetada y publicada en ambos
+  repos. opencode: tag `v0.6.3` + release con notes (head `70811dd`). pi:
+  una sesión del par ya había mergeado su prep (PR #41, changelog completo
+  #37/#38/#39, versiones a 0.6.3); mi prep duplicado (PR #42) se cerró con
+  comentario y su rama eliminada; tag `v0.6.3` (f5fc081) + release publicada.
+  Sin publicación en npm. Par v0.6.3 completo (Latest en ambas).
