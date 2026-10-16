@@ -11,6 +11,7 @@ import {
   GAUGE_ANSI_RESET_DIM,
   GAUGE_ANSI_RESET_FG,
   gaugeColorAnsi,
+  gaugeColorHex,
 } from "../src/gauge-color.ts";
 import { AuthError, CatalogError } from "../src/errors.ts";
 
@@ -430,6 +431,19 @@ describe("gauge-color thresholds", () => {
     expect(gaugeColorAnsi(90)).toBe("\x1b[38;2;249;115;22m");
     expect(gaugeColorAnsi(91)).toBe("\x1b[38;2;239;68;68m");
     expect(gaugeColorAnsi(100)).toBe("\x1b[38;2;239;68;68m");
+  });
+});
+
+describe("gaugeColorHex thresholds", () => {
+  it("maps the same bands to hex for OpenTUI spans", () => {
+    expect(gaugeColorHex(0)).toBe("#22c55e");
+    expect(gaugeColorHex(50)).toBe("#22c55e");
+    expect(gaugeColorHex(51)).toBe("#eab308");
+    expect(gaugeColorHex(75)).toBe("#eab308");
+    expect(gaugeColorHex(76)).toBe("#f97316");
+    expect(gaugeColorHex(90)).toBe("#f97316");
+    expect(gaugeColorHex(91)).toBe("#ef4444");
+    expect(gaugeColorHex(100)).toBe("#ef4444");
   });
 });
 

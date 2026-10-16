@@ -14,13 +14,35 @@ export const GAUGE_COLORS = {
   red: "38;2;239;68;68",
 } as const;
 
+/**
+ * Same palette as hex, for OpenTUI widget surfaces that strip embedded SGR
+ * and require styling through `<span fg>` props instead.
+ */
+export const GAUGE_HEX = {
+  green: "#22c55e",
+  yellow: "#eab308",
+  orange: "#f97316",
+  red: "#ef4444",
+} as const;
+
+export type GaugeColorName = keyof typeof GAUGE_COLORS;
+
+/** Threshold bands over used%: <=50 green, 51-75 yellow, 76-90 orange, >90 red. */
+export function gaugeColorName(usedPercent: number): GaugeColorName {
+  return usedPercent <= 50 ? "green"
+    : usedPercent <= 75 ? "yellow"
+    : usedPercent <= 90 ? "orange"
+    : "red";
+}
+
 /** Thresholds over used%: <=50 green, 51-75 yellow, 76-90 orange, >90 red. */
 export function gaugeColorAnsi(usedPercent: number): string {
-  const color = usedPercent <= 50 ? GAUGE_COLORS.green
-    : usedPercent <= 75 ? GAUGE_COLORS.yellow
-    : usedPercent <= 90 ? GAUGE_COLORS.orange
-    : GAUGE_COLORS.red;
-  return `\x1b[${color}m`;
+  return `\x1b[${GAUGE_COLORS[gaugeColorName(usedPercent)]}m`;
+}
+
+/** Hex form of the same thresholds, keyed for OpenTUI `<span fg>` styling. */
+export function gaugeColorHex(usedPercent: number): string {
+  return GAUGE_HEX[gaugeColorName(usedPercent)];
 }
 
 /**
