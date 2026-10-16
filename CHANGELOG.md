@@ -11,8 +11,23 @@
   siguen en texto plano; los sufijos TPM/RPM/resets van fuera del run
   coloreado. La salida sin color es byte-idéntica. Espejo de
   pi-actsis-litellm#35 (PRs #37/#38); issue #21, PR #22.
-- El widget de la TUI sigue plano: el renderer de opentui no tiene
-  confirmación visual de SGR en este repo (documentado en el README).
+- Corregido: **color en el chat (segunda pasada)** — verificado contra la base
+  de mensajes de opencode: el almacenamiento elimina el byte ESC del texto del
+  assistant, así que el renderer `ansi` recibía códigos literales sin escapes y
+  no pintaba nada. `src/ansi.ts` ahora reconoce ambas formas (ESC completo y
+  fragmentos ESC-less `\[[0-9;:]*[A-Za-z]`, 19 tests; los corchetes que no son
+  fragmentos SGR quedan literales).
+- Corregido: **color en el widget de la TUI** — el reconciler de `@opentui/solid`
+  solo aplica el prop `style` en nodos de texto (un prop `fg` suelto se ignora),
+  así que el widget Budget ahora compone la línea con
+  `<span style={{ fg }}>` por segmento (`src/tui.tsx` + `budgetWidgetSegments`).
+- Corregido: **color en el chat** — los fences con info string `ansi` se
+  renderizan con un code-block renderer registrado desde el plugin TUI
+  (`context.markdown.registerCodeBlockRenderer`, el mismo mecanismo builtin de
+  opencode para latex/mermaid): el nuevo parser `src/ansi.ts` convierte el SGR
+  truecolor (38;2;r;g;b, resets 0/39; secuencias no-SGR y OSC stripped) en runs
+  coloreados. Los templates de comandos y las descripciones de tools exigen el
+  fence ```ansi. La salida de los tools no cambia.
 
 ## 0.6.2 — 2026-10-15 — Emparejada con pi-actsis-litellm
 

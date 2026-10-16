@@ -1330,6 +1330,22 @@ function formatLocalDateTime(value) {
   return `${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")} (${formatter.resolvedOptions().timeZone}, ${offset})`;
 }
 
+// src/gauge-color.ts
+var GAUGE_COLORS = {
+  green: "38;2;34;197;94",
+  yellow: "38;2;234;179;8",
+  orange: "38;2;249;115;22",
+  red: "38;2;239;68;68"
+};
+function gaugeColorName(usedPercent) {
+  return usedPercent <= 50 ? "green" : usedPercent <= 75 ? "yellow" : usedPercent <= 90 ? "orange" : "red";
+}
+function gaugeColorAnsi(usedPercent) {
+  return `\x1B[${GAUGE_COLORS[gaugeColorName(usedPercent)]}m`;
+}
+var GAUGE_ANSI_RESET_DIM = "\x1B[2;39m";
+var GAUGE_ANSI_RESET_FG = "\x1B[39m";
+
 // src/budget.ts
 function parseBudgetResetAt(value) {
   if (value === void 0 || value === null) return null;
@@ -1479,21 +1495,28 @@ function budgetGauge(percent) {
   const filled = Math.round(clamped / 100 * GAUGE_CELLS);
   return GAUGE_FILLED.repeat(filled) + GAUGE_EMPTY.repeat(GAUGE_CELLS - filled);
 }
-function formatBudgetStatus(info) {
+function formatBudgetStatus(info, options = {}) {
   if (info.spend === null) return void 0;
   const spend = `$${info.spend.toFixed(2)}`;
   if (info.maxBudget !== null && info.maxBudget > 0) {
     const percent = budgetUsagePercent(info.spend, info.maxBudget);
     const cap = `$${info.maxBudget.toFixed(2)}`;
-    return `Budget ${budgetGauge(percent)} ${Math.round(percent)}% \xB7 ${spend}/${cap}`;
+    const run = `${budgetGauge(percent)} ${Math.round(percent)}%`;
+    const colored = options.color === true ? `${gaugeColorAnsi(percent)}${run}${GAUGE_ANSI_RESET_FG}` : run;
+    return `Budget ${colored} \xB7 ${spend}/${cap}`;
   }
   return `Budget ${spend} used (no cap)`;
 }
-function formatBudgetLine(info) {
+function formatBudgetLine(info, options = {}) {
   if (info.spend === null) return null;
   const percent = budgetUsagePercent(info.spend, info.maxBudget);
-  const capPart = info.maxBudget !== null ? ` / $${info.maxBudget.toFixed(2)} used (${Math.round(percent)}%)` : ` used (no budget cap)`;
+  const maxBudget = info.maxBudget;
+  const hasCap = maxBudget !== null;
+  const capPart = hasCap ? ` / $${maxBudget.toFixed(2)} used (${Math.round(percent)}%)` : ` used (no budget cap)`;
   let line = `$${info.spend.toFixed(2)}${capPart}`;
+  if (hasCap && options.color === true) {
+    line = `${gaugeColorAnsi(percent)}${line}${GAUGE_ANSI_RESET_DIM}`;
+  }
   if (info.tpmLimit !== null) {
     line += ` | TPM ${info.tpmLimit.toLocaleString("en-US")}`;
   }
@@ -2292,16 +2315,6 @@ function computeTopModelRows(summary, publicIds) {
 }
 
 // src/usage-subs.ts
-var GAUGE_COLORS = {
-  green: "38;2;34;197;94",
-  yellow: "38;2;234;179;8",
-  orange: "38;2;249;115;22",
-  red: "38;2;239;68;68"
-};
-function gaugeColorAnsi(usedPercent) {
-  const color = usedPercent <= 50 ? GAUGE_COLORS.green : usedPercent <= 75 ? GAUGE_COLORS.yellow : usedPercent <= 90 ? GAUGE_COLORS.orange : GAUGE_COLORS.red;
-  return `\x1B[${color}m`;
-}
 var SESSION_WINDOW_MS = 5 * 36e5;
 var WEEK_WINDOW_MS = 7 * 24 * 36e5;
 var MIN_ELAPSED_PERCENT = 10;
@@ -2460,7 +2473,7 @@ function formatWindowCell(window, quota, weekly, color, now) {
     const pace = paceOverElapsed(used, elapsed);
     const ahead = pace != null && pace > 1;
     const run = `${usageGauge(used)} ${Math.round(used)}%${paceProjectionSuffix(used, elapsed)} ${requests.toLocaleString("en-US")} reqs`;
-    return color ? `${gaugeColorAnsi(escalatedUsedPercent(used, ahead))}${run}\x1B[2;39m` : run;
+    return color ? `${gaugeColorAnsi(escalatedUsedPercent(used, ahead))}${run}${GAUGE_ANSI_RESET_DIM}` : run;
   }
   const tokens = (window.inputTokens ?? 0) + (window.outputTokens ?? 0);
   if (window.limitUsd != null) {
@@ -2469,7 +2482,7 @@ function formatWindowCell(window, quota, weekly, color, now) {
     const pace = paceOverElapsed(percent, elapsed);
     const ahead = pace != null && pace > 1;
     const run = `${usageGauge(percent)} $${usage.toFixed(2)} / $${limit.toFixed(2)}${paceProjectionSuffix(percent, elapsed)}`;
-    return color ? `${gaugeColorAnsi(escalatedUsedPercent(percent, ahead))}${run}\x1B[2;39m` : run;
+    return color ? `${gaugeColorAnsi(escalatedUsedPercent(percent, ahead))}${run}${GAUGE_ANSI_RESET_DIM}` : run;
   }
   return `${requests.toLocaleString("en-US")} reqs \xB7 ${tokens.toLocaleString("en-US")} tok`;
 }
@@ -2600,6 +2613,7 @@ function formatExpiry(entry) {
   return formatLocalDateTime(entry.expires) ?? "never";
 }
 var EMPTY_INPUT = { type: "object", properties: {}, additionalProperties: false };
+var RELAY_VERBATIM = " The caller must relay the returned text verbatim in a fenced code block whose info string is exactly ansi \u2014 ANSI escape sequences included; do not summarize, reformat, or reprocess it.";
 var USAGE_INPUT = {
   type: "object",
   properties: {
@@ -2708,12 +2722,12 @@ function buildLitellmToolInfos(deps) {
           { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
           stateDir
         );
-        const primary = formatBudgetLine(snapshot.primary);
+        const primary = formatBudgetLine(snapshot.primary, { color: true });
         if (primary) {
           budgetLines = [`Budget: ${primary}`];
           if (snapshot.source === "user_info") {
             for (const key of snapshot.ownKeys) {
-              const keyLine = formatBudgetLine(key);
+              const keyLine = formatBudgetLine(key, { color: true });
               if (keyLine) {
                 budgetLines.push(
                   key.keyAlias ? `Key ${key.keyAlias}: ${keyLine}` : `Key: ${keyLine}`
@@ -2771,7 +2785,7 @@ function buildLitellmToolInfos(deps) {
         { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
         stateDir
       );
-      const text = formatBudgetStatus(snapshot.primary);
+      const text = formatBudgetStatus(snapshot.primary, { color: true });
       return text ?? "no spend data (spend null)";
     } catch (err) {
       if (err instanceof AuthError) {
@@ -3025,7 +3039,7 @@ function buildLitellmToolInfos(deps) {
   return [
     {
       name: "actsis_litellm_status",
-      description: "Show LiteLLM gateway status, credential state, and cache age (dates in system timezone).",
+      description: "Show LiteLLM gateway status, credential state, and cache age (dates in system timezone)." + RELAY_VERBATIM,
       input: EMPTY_INPUT,
       async execute() {
         return { content: await status() };
@@ -3033,7 +3047,7 @@ function buildLitellmToolInfos(deps) {
     },
     {
       name: "actsis_litellm_budget",
-      description: "Force a budget refresh and report the exact outcome.",
+      description: "Force a budget refresh and report the exact outcome." + RELAY_VERBATIM,
       input: EMPTY_INPUT,
       async execute() {
         return { content: await budget() };
@@ -3041,7 +3055,7 @@ function buildLitellmToolInfos(deps) {
     },
     {
       name: "actsis_litellm_models",
-      description: "Force-sync the LiteLLM model catalog from the gateway.",
+      description: "Force-sync the LiteLLM model catalog from the gateway." + RELAY_VERBATIM,
       input: EMPTY_INPUT,
       async execute() {
         return { content: await models() };
@@ -3049,7 +3063,7 @@ function buildLitellmToolInfos(deps) {
     },
     {
       name: "actsis_litellm_usage",
-      description: "Show per-model usage from the LiteLLM gateway (spend, tokens, requests) for a UTC date window; supports day counts and explicit date ranges.",
+      description: "Show per-model usage from the LiteLLM gateway (spend, tokens, requests) for a UTC date window; supports day counts and explicit date ranges." + RELAY_VERBATIM,
       input: USAGE_INPUT,
       async execute(input) {
         const args = typeof input.args === "string" ? input.args : void 0;
@@ -3058,7 +3072,7 @@ function buildLitellmToolInfos(deps) {
     },
     {
       name: "actsis_litellm_usage_subs",
-      description: "Show per-subscription Ollama Cloud usage, credits and system-local generation date; reset countdowns: 5h hours/minutes, weekly days/hours.",
+      description: "Show per-subscription Ollama Cloud usage, credits and system-local generation date; reset countdowns: 5h hours/minutes, weekly days/hours." + RELAY_VERBATIM,
       input: EMPTY_INPUT,
       async execute() {
         return { content: await usageSubs() };
@@ -3066,7 +3080,7 @@ function buildLitellmToolInfos(deps) {
     },
     {
       name: "actsis_litellm_top",
-      description: "Enable, disable, or toggle the Top-5 spend models TUI widget (7 UTC days); persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows.",
+      description: "Enable, disable, or toggle the Top-5 spend models TUI widget (7 UTC days); persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows." + RELAY_VERBATIM,
       input: TOP_INPUT,
       async execute(input) {
         const args = typeof input.args === "string" ? input.args : void 0;
@@ -3075,7 +3089,7 @@ function buildLitellmToolInfos(deps) {
     },
     {
       name: "actsis_litellm_logout",
-      description: "Revoke LiteLLM credentials and clear local state.",
+      description: "Revoke LiteLLM credentials and clear local state." + RELAY_VERBATIM,
       input: EMPTY_INPUT,
       async execute() {
         return { content: await logout() };
@@ -3220,37 +3234,37 @@ function buildCommandDefinitions(existing) {
     {
       name: "actsis-litellm-status",
       description: "Show LiteLLM gateway status and cache state (dates in system timezone).",
-      template: "Use the actsis_litellm_status tool, then summarize its result for the user."
+      template: "Use the actsis_litellm_status tool, then reply with its output verbatim in a fenced code block whose info string is exactly ansi \u2014 ANSI escape sequences included; do not summarize, reformat, or reprocess it."
     },
     {
       name: "actsis-litellm-models",
       description: "Force-sync the LiteLLM model catalog and show changes.",
-      template: "Use the actsis_litellm_models tool, then summarize its result for the user."
+      template: "Use the actsis_litellm_models tool, then reply with its output verbatim in a fenced code block whose info string is exactly ansi \u2014 ANSI escape sequences included; do not summarize, reformat, or reprocess it."
     },
     {
       name: "actsis-litellm-budget",
       description: "Force a budget refresh and report the exact outcome.",
-      template: "Use the actsis_litellm_budget tool, then summarize its result for the user."
+      template: "Use the actsis_litellm_budget tool, then reply with its output verbatim in a fenced code block whose info string is exactly ansi \u2014 ANSI escape sequences included; do not summarize, reformat, or reprocess it."
     },
     {
       name: "actsis-litellm-usage",
       description: "Show per-model usage (spend/tokens/requests, UTC date ranges); args: [days] or 'YYYY-MM-DD .. YYYY-MM-DD'",
-      template: "Use the actsis_litellm_usage tool, passing any window argument the user gave (a day count like 14, or a range like 2025-03-01 .. 2025-03-31) as its args input; omit args for the default last 30 days. Then summarize its result for the user."
+      template: "Use the actsis_litellm_usage tool, passing any window argument the user gave (a day count like 14, or a range like 2025-03-01 .. 2025-03-31) as its args input; omit args for the default last 30 days. Then reply with its output verbatim in a fenced code block whose info string is exactly ansi \u2014 ANSI escape sequences included; do not summarize, reformat, or reprocess it."
     },
     {
       name: "actsis-litellm-usage-subs",
       description: "Show per-subscription Ollama Cloud usage (system-local generation date; reset countdowns: 5h hours/minutes, weekly days/hours)",
-      template: "Use the actsis_litellm_usage_subs tool, then summarize its result for the user."
+      template: "Use the actsis_litellm_usage_subs tool, then reply with its output verbatim in a fenced code block whose info string is exactly ansi \u2014 ANSI escape sequences included; do not summarize, reformat, or reprocess it."
     },
     {
       name: "actsis-litellm-top",
       description: "Enable, disable or toggle the Top-5 spend widget (7 UTC days; args: on | off | toggle; omit to toggle).",
-      template: "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then summarize its result for the user."
+      template: "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then reply with its output verbatim in a fenced code block whose info string is exactly ansi \u2014 ANSI escape sequences included; do not summarize, reformat, or reprocess it."
     },
     {
       name: "actsis-litellm-logout",
       description: "Revoke LiteLLM credentials and clear local state.",
-      template: "Use the actsis_litellm_logout tool, then summarize its result for the user."
+      template: "Use the actsis_litellm_logout tool, then reply with its output verbatim in a fenced code block whose info string is exactly ansi \u2014 ANSI escape sequences included; do not summarize, reformat, or reprocess it."
     }
   ];
   return all.filter((command) => !defined.has(command.name));

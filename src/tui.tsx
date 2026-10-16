@@ -3,10 +3,14 @@ import { Plugin } from "@opencode/plugin/tui";
 import type { Context } from "@opencode/plugin/tui/plugin";
 import type { SlotClaim } from "@opencode/plugin/tui/context";
 import { createSignal } from "solid-js";
+import { TextNodeRenderable, TextRenderable } from "@opentui/core";
+import type { Renderable } from "@opentui/core";
+import { parseAnsiRuns } from "./ansi.ts";
 import {
-  budgetWidgetLine,
+  budgetWidgetSegments,
   readBudgetWidgetData,
   type BudgetWidgetData,
+  type WidgetSegment,
 } from "./budget-widget.ts";
 import {
   readTopWidgetData,
@@ -18,6 +22,32 @@ import {
   WIDGET_REFRESH_EVENT_TYPES,
   type WidgetRefreshEventType,
 } from "./widget-events.ts";
+
+/**
+ * Build a line-preserving text renderable from raw ANSI text for the chat
+ * transcript. The chat's default code-block rendering shows embedded SGR
+ * literally, so the plugin registers this as the renderer for ```ansi fenced
+ * blocks (same mechanism opencode uses for its built-in latex and mermaid
+ * renderers). Runs preserve the SGR colors the gateway surfaces emit.
+ */
+function ansiCodeBlockRenderer(
+  renderer: Context["renderer"],
+): (token: { text: string }) => Renderable {
+  return (token: { text: string }) => {
+    const text = new TextRenderable(renderer, {
+      width: "100%",
+      flexShrink: 0,
+      wrapMode: "none",
+      selectable: false,
+    });
+    for (const run of parseAnsiRuns(token.text)) {
+      const node = new TextNodeRenderable(run.fg === undefined ? {} : { fg: run.fg });
+      node.add(run.text);
+      text.add(node);
+    }
+    return text;
+  };
+}
 
 const IDLE_REFRESH_DEBOUNCE_MS = 2000;
 
@@ -35,8 +65,8 @@ export default Plugin.define({
       data = null;
       top = null;
     }
-    const [line, setLine] = createSignal<string | null>(
-      data ? budgetWidgetLine(data, Date.now()) : null,
+    const [line, setLine] = createSignal<WidgetSegment[] | null>(
+      data ? budgetWidgetSegments(data, Date.now()) : null,
     );
     const [topLines, setTopLines] = createSignal<string[] | null>(
       top ? topWidgetLines(top, Date.now()) : null,
@@ -47,7 +77,7 @@ export default Plugin.define({
     const refresh = async () => {
       try {
         const next = await readBudgetWidgetData();
-        setLine(next ? budgetWidgetLine(next, Date.now()) : null);
+        setLine(next ? budgetWidgetSegments(next, Date.now()) : null);
         // The server plugin persists (or clears) the top-5 rows on the same
         // session.idle trigger; show them only when the preference is on.
         const topData = await readTopWidgetData();
@@ -62,12 +92,37 @@ export default Plugin.define({
       }
     };
 
+    let unregisterAnsiRenderer: (() => void) | undefined;
+    try {
+      unregisterAnsiRenderer = context.markdown.registerCodeBlockRenderer(
+        "ansi",
+        ansiCodeBlockRenderer(context.renderer),
+      );
+    } catch {
+      // Language already claimed on this host (e.g. a hot-reload race): the
+      // host default (uncolored) code block keeps working.
+    }
+
     context.ui.slot({
       append: "sidebar.footer",
       render: (_input: { sessionID: string } & Record<string, never>) => {
         return line() || topLines() ? (
           <box>
-            <text>{line()}</text>
+            <text>
+              {line()?.map((segment) => {
+                // OpenTUI's reconciler applies `style` ({ fg }) on text-node
+                // renderables and silently ignores any other props — a bare
+                // `fg` prop renders plain white, which is what this widget
+                // showed before this fix.
+                return segment.fg === undefined ? (
+                  <span>{segment.text}</span>
+                ) : (
+                  <span style={{ fg: segment.fg } as Record<string, unknown>}>
+                    {segment.text}
+                  </span>
+                );
+              })}
+            </text>
             {topLines() && <text>{topLines()!.join("\n")}</text>}
           </box>
         ) : null;
@@ -93,6 +148,7 @@ export default Plugin.define({
     const pollTimer = setInterval(() => void refresh(), 60_000);
 
     return () => {
+      unregisterAnsiRenderer?.();
       for (const unsub of unsubscribers) unsub();
       if (timeout !== undefined) clearTimeout(timeout);
       clearInterval(pollTimer);

@@ -263,11 +263,18 @@ Sub  5h used                5h resets in  Weekly used               Weekly reset
 
 Un widget opcional de la TUI renderiza el gauge de budget en el pie de la
 barra lateral de OpenCode (y las Top-5 de modelos cuando el `widget top` está
-activo). El gauge de la TUI se renderiza **sin color**: el renderer de opentui
-no tiene confirmación visual de SGR en este repo, así que la línea de budget
-viaja en forma plana; el color por umbral vive en las superficies del tool
-(`actsis_litellm_budget` y el snapshot vivo de `actsis_litellm_status`), que
-sí renderizan SGR — mismo estándar probado por `actsis_litellm_usage_subs`. Se activa agregando el spec del paquete al array
+activo). El gauge del widget de la TUI se renderiza via segmentos
+`<span style={{ fg }}>` (el reconciler de @opentui/solid solo aplica el prop
+`style` en nodos de texto: un prop `fg` suelto se ignora y el texto sale blanco).
+En el chat, los fences con info string `ansi` se renderizan con un code-block
+renderer registrado por el plugin (mecanismo builtin de opencode para latex y
+mermaid): el bloque convierte el SGR en colores del tema del terminal, tanto
+en forma ESC completa como en fragmentos sin ESC (el almacenamiento del chat
+elimina el byte de escape del mensaje del assistant, y ese formato de
+fragmento es el que pinta). Los fences sin `ansi` siguen el render por
+defecto (códigos literales).
+El color por umbral vive igualmente en las superficies del tool
+(`actsis_litellm_budget` y el snapshot vivo de `actsis_litellm_status`). Se activa agregando el spec del paquete al array
 `plugins` de `~/.config/opencode/cli.json` — **además de** la entrada en
 `opencode.json`; ambos archivos de configuración son necesarios (ver
 [docs/installation.md](docs/installation.md)).

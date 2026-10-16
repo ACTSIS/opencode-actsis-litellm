@@ -1,15 +1,154 @@
 // src/tui.tsx
+import { setProp as _$setProp } from "@opentui/solid";
+import { effect as _$effect } from "@opentui/solid";
 import { insertNode as _$insertNode } from "@opentui/solid";
 import { memo as _$memo } from "@opentui/solid";
 import { insert as _$insert } from "@opentui/solid";
 import { createElement as _$createElement } from "@opentui/solid";
 import { Plugin } from "@opencode/plugin/tui";
 import { createSignal } from "solid-js";
+import { TextNodeRenderable, TextRenderable } from "@opentui/core";
+
+// src/ansi.ts
+var CSI_FINAL_MIN = 64;
+var CSI_FINAL_MAX = 126;
+var PARAM_RE = /[\d;:]/;
+function rgbHex(r, g, b) {
+  const channel = (c) => c >= 0 && c <= 255 ? c.toString(16).padStart(2, "0") : void 0;
+  const rr = channel(r);
+  const gg = channel(g);
+  const bb = channel(b);
+  if (rr === void 0 || gg === void 0 || bb === void 0) return void 0;
+  return `#${rr}${gg}${bb}`;
+}
+function applySgr(params, state) {
+  const parts = params.replaceAll(":", ";").split(";").map((part) => part === "" ? 0 : Number.parseInt(part, 10));
+  for (let index = 0; index < parts.length; index += 1) {
+    const param = parts[index];
+    if (param === 0 || param === 39) {
+      state.fg = void 0;
+      continue;
+    }
+    if (param === 38) {
+      const mode = parts[index + 1];
+      if (mode === 2) {
+        const color = rgbHex(
+          parts[index + 2],
+          parts[index + 3],
+          parts[index + 4]
+        );
+        if (color !== void 0) state.fg = color;
+        index += 4;
+      } else if (mode === 5) {
+        index += 2;
+      }
+      continue;
+    }
+  }
+}
+function isFragmentCsiAt(input, index) {
+  let cursor = index + 1;
+  while (cursor < input.length && PARAM_RE.test(input[cursor])) cursor += 1;
+  if (cursor === index + 1 || cursor >= input.length) return false;
+  const final = input[cursor];
+  return final >= "A" && final <= "Z" || final >= "a" && final <= "z";
+}
+function isLetter(char) {
+  return char >= "A" && char <= "Z" || char >= "a" && char <= "z";
+}
+function parseAnsiRuns(input) {
+  const runs = [];
+  const state = { fg: void 0 };
+  let text = "";
+  const flush = () => {
+    if (text.length > 0) {
+      runs.push(state.fg === void 0 ? { text } : { text, fg: state.fg });
+      text = "";
+    }
+  };
+  let index = 0;
+  while (index < input.length) {
+    const char = input[index];
+    if (char === "\x1B") {
+      const next = input[index + 1];
+      if (next === "[") {
+        let cursor = index + 2;
+        while (cursor < input.length && !(input.charCodeAt(cursor) >= CSI_FINAL_MIN && input.charCodeAt(cursor) <= CSI_FINAL_MAX)) {
+          cursor += 1;
+        }
+        if (cursor >= input.length) {
+          break;
+        }
+        if (input[cursor] === "m") {
+          const temp = { fg: state.fg };
+          applySgr(input.slice(index + 2, cursor), temp);
+          if (temp.fg !== state.fg) flush();
+          state.fg = temp.fg;
+        }
+        index = cursor + 1;
+        continue;
+      }
+      if (next === "]") {
+        const bel = input.indexOf("\x07", index + 2);
+        const st = input.indexOf("\x1B\\", index + 2);
+        let end;
+        if (bel === -1 && st === -1) {
+          end = input.length;
+        } else if (bel === -1) {
+          end = st + 2;
+        } else if (st === -1) {
+          end = bel + 1;
+        } else {
+          end = Math.min(bel + 1, st + 2);
+        }
+        index = Math.min(end, input.length);
+        continue;
+      }
+      index += 1;
+      continue;
+    }
+    if (char === "[" && isFragmentCsiAt(input, index)) {
+      let cursor = index + 1;
+      while (cursor < input.length && PARAM_RE.test(input[cursor])) cursor += 1;
+      const final = input[cursor];
+      if (final === void 0) break;
+      if (final === "m") {
+        const temp = { fg: state.fg };
+        applySgr(input.slice(index + 1, cursor), temp);
+        if (temp.fg !== state.fg) flush();
+        state.fg = temp.fg;
+      } else if (isLetter(final)) {
+        index = cursor + 1;
+        continue;
+      }
+      index = cursor + 1;
+      continue;
+    }
+    text += char;
+    index += 1;
+  }
+  flush();
+  return runs;
+}
 
 // src/budget-widget.ts
 import { readFile } from "fs/promises";
 import os from "os";
 import path from "path";
+
+// src/gauge-color.ts
+var GAUGE_HEX = {
+  green: "#22c55e",
+  yellow: "#eab308",
+  orange: "#f97316",
+  red: "#ef4444"
+};
+function gaugeColorName(usedPercent) {
+  return usedPercent <= 50 ? "green" : usedPercent <= 75 ? "yellow" : usedPercent <= 90 ? "orange" : "red";
+}
+function gaugeColorHex(usedPercent) {
+  return GAUGE_HEX[gaugeColorName(usedPercent)];
+}
 
 // src/budget.ts
 function budgetUsagePercent(spend, maxBudget) {
@@ -24,19 +163,9 @@ function budgetGauge(percent) {
   const filled = Math.round(clamped / 100 * GAUGE_CELLS);
   return GAUGE_FILLED.repeat(filled) + GAUGE_EMPTY.repeat(GAUGE_CELLS - filled);
 }
-function formatBudgetStatus(info) {
-  if (info.spend === null) return void 0;
-  const spend = `$${info.spend.toFixed(2)}`;
-  if (info.maxBudget !== null && info.maxBudget > 0) {
-    const percent = budgetUsagePercent(info.spend, info.maxBudget);
-    const cap = `$${info.maxBudget.toFixed(2)}`;
-    return `Budget ${budgetGauge(percent)} ${Math.round(percent)}% \xB7 ${spend}/${cap}`;
-  }
-  return `Budget ${spend} used (no cap)`;
-}
 
 // src/budget-widget.ts
-function budgetWidgetLine(data, now, maxAgeSeconds) {
+function budgetWidgetSegments(data, now, maxAgeSeconds) {
   if (!data.snapshot) return null;
   if (typeof data.refreshedAt !== "number" || !Number.isFinite(data.refreshedAt)) {
     return null;
@@ -44,9 +173,20 @@ function budgetWidgetLine(data, now, maxAgeSeconds) {
   if (maxAgeSeconds !== void 0 && (now - data.refreshedAt) / 1e3 > maxAgeSeconds) {
     return null;
   }
-  const status = formatBudgetStatus(data.snapshot.primary);
-  if (status !== void 0) return status;
-  return "Budget: no spend data";
+  const info = data.snapshot.primary;
+  if (info.spend === null) return [{ text: "Budget: no spend data" }];
+  if (info.maxBudget !== null && info.maxBudget > 0) {
+    const percent = budgetUsagePercent(info.spend, info.maxBudget);
+    const run = `${budgetGauge(percent)} ${Math.round(percent)}%`;
+    return [
+      { text: "Budget " },
+      { text: run, fg: gaugeColorHex(percent) },
+      {
+        text: ` \xB7 $${info.spend.toFixed(2)}/$${info.maxBudget.toFixed(2)}`
+      }
+    ];
+  }
+  return [{ text: `Budget $${info.spend.toFixed(2)} used (no cap)` }];
 }
 function defaultStateDir() {
   const xdg = process.env.XDG_DATA_HOME;
@@ -241,6 +381,24 @@ var WIDGET_REFRESH_TRIGGER_SET = new Set(
 );
 
 // src/tui.tsx
+function ansiCodeBlockRenderer(renderer) {
+  return (token) => {
+    const text = new TextRenderable(renderer, {
+      width: "100%",
+      flexShrink: 0,
+      wrapMode: "none",
+      selectable: false
+    });
+    for (const run of parseAnsiRuns(token.text)) {
+      const node = new TextNodeRenderable(run.fg === void 0 ? {} : {
+        fg: run.fg
+      });
+      node.add(run.text);
+      text.add(node);
+    }
+    return text;
+  };
+}
 var IDLE_REFRESH_DEBOUNCE_MS = 2e3;
 var tui_default = Plugin.define({
   id: "actsis-litellm-budget",
@@ -256,13 +414,13 @@ var tui_default = Plugin.define({
       data = null;
       top = null;
     }
-    const [line, setLine] = createSignal(data ? budgetWidgetLine(data, Date.now()) : null);
+    const [line, setLine] = createSignal(data ? budgetWidgetSegments(data, Date.now()) : null);
     const [topLines, setTopLines] = createSignal(top ? topWidgetLines(top, Date.now()) : null);
     let timeout;
     const refresh = async () => {
       try {
         const next = await readBudgetWidgetData();
-        setLine(next ? budgetWidgetLine(next, Date.now()) : null);
+        setLine(next ? budgetWidgetSegments(next, Date.now()) : null);
         const topData = await readTopWidgetData();
         setTopLines(await readTopModelsWidgetEnabled() && topData ? topWidgetLines(topData, Date.now()) : null);
       } catch {
@@ -270,19 +428,37 @@ var tui_default = Plugin.define({
         setTopLines(null);
       }
     };
+    let unregisterAnsiRenderer;
+    try {
+      unregisterAnsiRenderer = context.markdown.registerCodeBlockRenderer("ansi", ansiCodeBlockRenderer(context.renderer));
+    } catch {
+    }
     context.ui.slot({
       append: "sidebar.footer",
       render: (_input) => {
         return line() || topLines() ? (() => {
           var _el$ = _$createElement("box"), _el$2 = _$createElement("text");
           _$insertNode(_el$, _el$2);
-          _$insert(_el$2, line);
+          _$insert(_el$2, () => line()?.map((segment) => {
+            return segment.fg === void 0 ? (() => {
+              var _el$3 = _$createElement("span");
+              _$insert(_el$3, () => segment.text);
+              return _el$3;
+            })() : (() => {
+              var _el$4 = _$createElement("span");
+              _$insert(_el$4, () => segment.text);
+              _$effect((_$p) => _$setProp(_el$4, "style", {
+                fg: segment.fg
+              }, _$p));
+              return _el$4;
+            })();
+          }));
           _$insert(_el$, (() => {
             var _c$ = _$memo(() => !!topLines());
             return () => _c$() && (() => {
-              var _el$3 = _$createElement("text");
-              _$insert(_el$3, () => topLines().join("\n"));
-              return _el$3;
+              var _el$5 = _$createElement("text");
+              _$insert(_el$5, () => topLines().join("\n"));
+              return _el$5;
             })();
           })(), null);
           return _el$;
@@ -296,6 +472,7 @@ var tui_default = Plugin.define({
     void refresh();
     const pollTimer = setInterval(() => void refresh(), 6e4);
     return () => {
+      unregisterAnsiRenderer?.();
       for (const unsub of unsubscribers) unsub();
       if (timeout !== void 0) clearTimeout(timeout);
       clearInterval(pollTimer);
