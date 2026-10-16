@@ -109,6 +109,18 @@ export interface ToolInfo {
 
 const EMPTY_INPUT = { type: "object" as const, properties: {}, additionalProperties: false as const };
 
+/**
+ * Appended to every data-tool description: tool callers (including ad-hoc
+ * calls driven by this catalog) must relay raw output untouched — the model
+ * sits between the tool and the screen, and summarizing loses ANSI colors,
+ * alignment, and the exact table bytes the surfaces were verified against.
+ * The fence must carry the `ansi` info string: the TUI plugin registers a
+ * chat code-block renderer for that language (OpenCode's built-in latex and
+ * mermaid mechanism); a plain fence shows embedded SGR codes literally.
+ */
+const RELAY_VERBATIM =
+  " The caller must relay the returned text verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.";
+
 const USAGE_INPUT = {
   type: "object" as const,
   properties: {
@@ -633,7 +645,9 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
   return [
     {
       name: "actsis_litellm_status",
-      description: "Show LiteLLM gateway status, credential state, and cache age (dates in system timezone).",
+      description:
+        "Show LiteLLM gateway status, credential state, and cache age (dates in system timezone)." +
+        RELAY_VERBATIM,
       input: EMPTY_INPUT,
       async execute() {
         return { content: await status() };
@@ -641,7 +655,9 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     },
     {
       name: "actsis_litellm_budget",
-      description: "Force a budget refresh and report the exact outcome.",
+      description:
+        "Force a budget refresh and report the exact outcome." +
+        RELAY_VERBATIM,
       input: EMPTY_INPUT,
       async execute() {
         return { content: await budget() };
@@ -649,7 +665,9 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     },
     {
       name: "actsis_litellm_models",
-      description: "Force-sync the LiteLLM model catalog from the gateway.",
+      description:
+        "Force-sync the LiteLLM model catalog from the gateway." +
+        RELAY_VERBATIM,
       input: EMPTY_INPUT,
       async execute() {
         return { content: await models() };
@@ -658,7 +676,8 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     {
       name: "actsis_litellm_usage",
       description:
-        "Show per-model usage from the LiteLLM gateway (spend, tokens, requests) for a UTC date window; supports day counts and explicit date ranges.",
+        "Show per-model usage from the LiteLLM gateway (spend, tokens, requests) for a UTC date window; supports day counts and explicit date ranges." +
+        RELAY_VERBATIM,
       input: USAGE_INPUT,
       async execute(input) {
         const args = typeof input.args === "string" ? input.args : undefined;
@@ -668,7 +687,8 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     {
       name: "actsis_litellm_usage_subs",
       description:
-        "Show per-subscription Ollama Cloud usage, credits and system-local generation date; reset countdowns: 5h hours/minutes, weekly days/hours.",
+        "Show per-subscription Ollama Cloud usage, credits and system-local generation date; reset countdowns: 5h hours/minutes, weekly days/hours." +
+        RELAY_VERBATIM,
       input: EMPTY_INPUT,
       async execute() {
         return { content: await usageSubs() };
@@ -677,7 +697,8 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     {
       name: "actsis_litellm_top",
       description:
-        "Enable, disable, or toggle the Top-5 spend models TUI widget (7 UTC days); persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows.",
+        "Enable, disable, or toggle the Top-5 spend models TUI widget (7 UTC days); persists the preference (on|off|toggle, omitted = toggle) and refreshes or clears the widget rows." +
+        RELAY_VERBATIM,
       input: TOP_INPUT,
       async execute(input) {
         const args = typeof input.args === "string" ? input.args : undefined;
@@ -686,7 +707,9 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     },
     {
       name: "actsis_litellm_logout",
-      description: "Revoke LiteLLM credentials and clear local state.",
+      description:
+        "Revoke LiteLLM credentials and clear local state." +
+        RELAY_VERBATIM,
       input: EMPTY_INPUT,
       async execute() {
         return { content: await logout() };

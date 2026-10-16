@@ -24,6 +24,11 @@ querying the gateway's `/ollama-usage` pass-through. Contract lives in
 - T2 → S1: command + tool wiring in `plugin.ts`/`tools.ts`.
 - T3 → S2-S4: tests (`test/usage-subs.test.ts`): fetch shape, 401/403/404 handling,
   rendering, command/tool wiring.
+- T4 → S3: widget color via OpenTUI span `style={{fg}}` segments
+  (`src/tui.tsx`, `src/budget-widget.ts`), threshold hex in `src/gauge-color.ts`.
+- T5 → S3: chat color via `ansi` code-block renderer (`src/ansi.ts` parser +
+  registration in `src/tui.tsx`); tool descriptions and command templates demand
+  the `ansi` fence (`src/tools.ts`, `src/plugin.ts`).
 
 ## Log
 
@@ -47,3 +52,27 @@ querying the gateway's `/ollama-usage` pass-through. Contract lives in
   bien la estructura de la tabla, pero todo en colo blanco". Wired: tool emits
   {color: true}; ANSI-aware evidence: structure rendered fine + Bun.stripANSI/
   countAnsiEscapeCodes present in the binary.
+- L10 (verbatim, user): "Amiguis, los ajustes que hicimos no funcionaron, todo
+  sigue sin colr, ni en el chat ni el el widget: [Image 1]". Root causes con
+  evidencia (2026-10-16): (a) el reconciler de @opentui/solid IGNORA props
+  sueltas en nodos de texto — setProperty solo maneja `style` y `href`, así que
+  `<span fg="...">` (fix anterior) renderizaba blanco (node_modules/@opentui/solid/index.js:634, setProperty de text-node); OpenCode mismo
+  compila spans como `style={{fg}}`;
+  (b) el chat nunca interpreta SGR en fences normales — el mecanismo soportado
+  es `context.markdown.registerCodeBlockRenderer(language, render)` (
+  node_modules/@opencode/plugin/dist/tui/context.d.ts:469; host: plugins builtin
+  `opencode.latex` y `opencode.merman` lo usan para pintar chat). Fix inline:
+  `src/ansi.ts` (parser SGR truecolor→runs, 14 tests) + renderer ```ansi
+  registrado en `src/tui.tsx` + spans con `style={{fg}}` + templates y
+  descripciones de tools exigen fence `ansi` (`src/tools.ts` RELAY_VERBATIM,
+  `src/plugin.ts`). Typecheck OK, 474/474 tests, dist regenerado. Verificado
+  visualmente por el usuario: widget OK, chat aún sin color.
+- L11 (2026-10-16): root cause del chat con evidencia de datos: la fila del
+  assistant en opencode.db (`session_message msg_14681df250018W6tlAKul6qqYt`)
+  guarda 0 bytes ESC — el runtime elimina el byte de escape al persistir el
+  texto del modelo, así que el renderer recibía fragmentos literales y no había
+  nada que parsear. Fix: `src/ansi.ts` reconoce también fragmentos ESC-less
+  (`\[[0-9;:]*[A-Za-z]`, params ≥1 y final letra), sin falsos positivos en
+  corchetes normales, con test de reproducción del texto exacto almacenado.
+  Typecheck OK, 479/479 tests, dist regenerado. Pendiente: verificación visual
+  del usuario tras reiniciar la TUI.

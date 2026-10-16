@@ -262,40 +262,40 @@ export function buildCommandDefinitions(existing?: Array<{ name: string }>): Com
     {
       name: "actsis-litellm-status",
       description: "Show LiteLLM gateway status and cache state (dates in system timezone).",
-      template: "Use the actsis_litellm_status tool, then summarize its result for the user.",
+      template: "Use the actsis_litellm_status tool, then reply with its output verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.",
     },
     {
       name: "actsis-litellm-models",
       description: "Force-sync the LiteLLM model catalog and show changes.",
-      template: "Use the actsis_litellm_models tool, then summarize its result for the user.",
+      template: "Use the actsis_litellm_models tool, then reply with its output verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.",
     },
     {
       name: "actsis-litellm-budget",
       description: "Force a budget refresh and report the exact outcome.",
-      template: "Use the actsis_litellm_budget tool, then summarize its result for the user.",
+      template: "Use the actsis_litellm_budget tool, then reply with its output verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.",
     },
     {
       name: "actsis-litellm-usage",
       description: "Show per-model usage (spend/tokens/requests, UTC date ranges); args: [days] or 'YYYY-MM-DD .. YYYY-MM-DD'",
       template:
-        "Use the actsis_litellm_usage tool, passing any window argument the user gave (a day count like 14, or a range like 2025-03-01 .. 2025-03-31) as its args input; omit args for the default last 30 days. Then summarize its result for the user.",
+        "Use the actsis_litellm_usage tool, passing any window argument the user gave (a day count like 14, or a range like 2025-03-01 .. 2025-03-31) as its args input; omit args for the default last 30 days. Then reply with its output verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.",
     },
     {
       name: "actsis-litellm-usage-subs",
       description: "Show per-subscription Ollama Cloud usage (system-local generation date; reset countdowns: 5h hours/minutes, weekly days/hours)",
       template:
-        "Use the actsis_litellm_usage_subs tool, then summarize its result for the user.",
+        "Use the actsis_litellm_usage_subs tool, then reply with its output verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.",
     },
     {
       name: "actsis-litellm-top",
       description: "Enable, disable or toggle the Top-5 spend widget (7 UTC days; args: on | off | toggle; omit to toggle).",
       template:
-        "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then summarize its result for the user.",
+        "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then reply with its output verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.",
     },
     {
       name: "actsis-litellm-logout",
       description: "Revoke LiteLLM credentials and clear local state.",
-      template: "Use the actsis_litellm_logout tool, then summarize its result for the user.",
+      template: "Use the actsis_litellm_logout tool, then reply with its output verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.",
     },
   ];
   return all.filter((command) => !defined.has(command.name));

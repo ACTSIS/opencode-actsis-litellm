@@ -1,11 +1,23 @@
 import { readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { formatBudgetStatus, type GatewayBudgetSnapshot } from "./budget.ts";
+import {
+  budgetGauge,
+  budgetUsagePercent,
+  formatBudgetStatus,
+  type GatewayBudgetSnapshot,
+} from "./budget.ts";
+import { gaugeColorHex } from "./gauge-color.ts";
 
 export interface BudgetWidgetData {
   snapshot?: GatewayBudgetSnapshot;
   refreshedAt?: number;
+}
+
+/** One styled run of the widget line; `fg` is an OpenTUI `<span fg>` color. */
+export interface WidgetSegment {
+  text: string;
+  fg?: string;
 }
 
 /**
@@ -34,6 +46,44 @@ export function budgetWidgetLine(
   const status = formatBudgetStatus(data.snapshot.primary);
   if (status !== undefined) return status;
   return "Budget: no spend data";
+}
+
+/**
+ * Segment the budget line for OpenTUI widget surfaces, which strip embedded
+ * SGR and style through `<span fg>` props instead. Mirrors budgetWidgetLine's
+ * null discipline exactly; the plain-form line segments match
+ * formatBudgetStatus output so both paths stay byte-identical in text.
+ */
+export function budgetWidgetSegments(
+  data: BudgetWidgetData,
+  now: number,
+  maxAgeSeconds?: number,
+): WidgetSegment[] | null {
+  if (!data.snapshot) return null;
+  if (typeof data.refreshedAt !== "number" || !Number.isFinite(data.refreshedAt)) {
+    return null;
+  }
+  if (
+    maxAgeSeconds !== undefined &&
+    (now - data.refreshedAt) / 1000 > maxAgeSeconds
+  ) {
+    return null;
+  }
+
+  const info = data.snapshot.primary;
+  if (info.spend === null) return [{ text: "Budget: no spend data" }];
+  if (info.maxBudget !== null && info.maxBudget > 0) {
+    const percent = budgetUsagePercent(info.spend, info.maxBudget);
+    const run = `${budgetGauge(percent)} ${Math.round(percent)}%`;
+    return [
+      { text: "Budget " },
+      { text: run, fg: gaugeColorHex(percent) },
+      {
+        text: ` · $${info.spend.toFixed(2)}/$${info.maxBudget.toFixed(2)}`,
+      },
+    ];
+  }
+  return [{ text: `Budget $${info.spend.toFixed(2)} used (no cap)` }];
 }
 
 function defaultStateDir(): string {

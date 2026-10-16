@@ -5,6 +5,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import type { GatewayBudgetSnapshot } from "../src/budget.ts";
 import {
   budgetWidgetLine,
+  budgetWidgetSegments,
   readBudgetWidgetData,
   type BudgetWidgetData,
 } from "../src/budget-widget.ts";
@@ -97,6 +98,56 @@ describe("budgetWidgetLine", () => {
       refreshedAt: 1_000_000,
     };
     expect(budgetWidgetLine(noSpend, 1_000_100)).toBe("Budget: no spend data");
+  });
+});
+
+describe("budgetWidgetSegments", () => {
+  it("returns null without a snapshot", () => {
+    expect(budgetWidgetSegments({}, 2_000_000)).toBeNull();
+  });
+
+  it("returns null when refreshedAt is missing or non-finite", () => {
+    expect(
+      budgetWidgetSegments({ snapshot: fresh.snapshot }, 2_000_000),
+    ).toBeNull();
+    expect(
+      budgetWidgetSegments(
+        { snapshot: fresh.snapshot, refreshedAt: Number.NaN },
+        2_000_000,
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null when the snapshot is older than maxAgeSeconds", () => {
+    const stale: BudgetWidgetData = { ...fresh, refreshedAt: 1_000_000_000 };
+    expect(
+      budgetWidgetSegments(stale, 1_000_000_000 + 61_000, 60),
+    ).toBeNull();
+  });
+
+  it("segments the capped line with the threshold color on the gauge run", () => {
+    expect(budgetWidgetSegments(fresh, 1_000_000 + 30_000, 60)).toEqual([
+      { text: "Budget " },
+      { text: "▰▱▱▱▱▱▱▱ 12%", fg: "#22c55e" },
+      { text: " · $12.34/$100.00" },
+    ]);
+  });
+
+  it("keeps the uncapped and no-spend lines as one uncolored segment", () => {
+    const uncapped: BudgetWidgetData = {
+      snapshot: snapshotWith({ spend: 5, maxBudget: null }),
+      refreshedAt: 1_000_000,
+    };
+    expect(budgetWidgetSegments(uncapped, 1_000_100)).toEqual([
+      { text: "Budget $5.00 used (no cap)" },
+    ]);
+    const noSpend: BudgetWidgetData = {
+      snapshot: snapshotWith({ spend: null, maxBudget: 100 }),
+      refreshedAt: 1_000_000,
+    };
+    expect(budgetWidgetSegments(noSpend, 1_000_100)).toEqual([
+      { text: "Budget: no spend data" },
+    ]);
   });
 });
 
