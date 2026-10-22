@@ -427,6 +427,9 @@ describe("formatUsageSubsLines window pace", () => {
       subscriptions: [
         {
           name: "paced",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: null, limitUsd: null, requests: 40,
@@ -477,6 +480,9 @@ describe("formatUsageSubsLines window pace", () => {
       subscriptions: [
         {
           name: "dollar",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: 5.0, limitUsd: 10.0, requests: 8,
@@ -509,6 +515,9 @@ describe("formatUsageSubsLines window pace", () => {
       subscriptions: [
         {
           name: "opaque",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: 5.0, limitUsd: 10.0, requests: 8,
@@ -548,6 +557,9 @@ describe("formatUsageSubsLines window pace collector bounds", () => {
       subscriptions: [
         {
           name: "live-bug",
+          provider: null,
+          account: null,
+          status: null,
           plan: "Pro",
           session5h: {
             usageUsd: null, limitUsd: null, requests: 2752,
@@ -581,6 +593,9 @@ describe("formatUsageSubsLines window pace collector bounds", () => {
       subscriptions: [
         {
           name: "closed",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: 6.0, limitUsd: 10.0, requests: 9,

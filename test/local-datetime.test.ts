@@ -14,7 +14,8 @@ function subscriptions(sessionReset: string | null, weeklyReset: string | null):
   return {
     generatedAt: null,
     subscriptions: [{
-      name: "countdown", plan: null, session5h: window, weekly: window,
+      name: "countdown", provider: null, account: null, status: null,
+      plan: null, session5h: window, weekly: window,
       credits: {
         includedUsd: null, includedBalanceUsd: null, purchasedUsd: 2,
         session: { remainingPercent: 80, resetsAt: sessionReset },
