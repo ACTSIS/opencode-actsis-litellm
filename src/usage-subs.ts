@@ -313,7 +313,6 @@ function formatWindowCell(
   now: number,
 ): string {
   const usage = window.usageUsd ?? 0;
-  const requests = window.requests ?? 0;
   const elapsed = windowElapsedPercent(window, quota, weekly, now);
 
   // Legacy-plan dashboard quota wins: remaining % (used = 100 - remaining).
@@ -321,13 +320,11 @@ function formatWindowCell(
     const used = clampPercent(100 - quota.remainingPercent);
     const pace = paceOverElapsed(used, elapsed);
     const ahead = pace != null && pace > 1;
-    const run = `${usageGauge(used)} ${Math.round(used)}%${paceProjectionSuffix(used, elapsed)} ${requests.toLocaleString("en-US")} reqs`;
+    const run = `${usageGauge(used)} ${Math.round(used)}%${paceProjectionSuffix(used, elapsed)}`;
     return color
       ? `${gaugeColorAnsi(escalatedUsedPercent(used, ahead))}${run}${GAUGE_ANSI_RESET_DIM}`
       : run;
   }
-
-  const tokens = (window.inputTokens ?? 0) + (window.outputTokens ?? 0);
 
   if (window.limitUsd != null) {
     const limit = window.limitUsd;
@@ -345,13 +342,18 @@ function formatWindowCell(
       : run;
   }
 
-  return `${requests.toLocaleString("en-US")} reqs · ${tokens.toLocaleString("en-US")} tok`;
+  // No quota and no money for this window (e.g. an idle plan window): a dash
+  // keeps the table narrow — request/token counters were dropped on purpose.
+  return "-";
 }
 
 /** Remaining reset duration, rounded up to the window's smallest displayed unit. */
 function formatResetsCell(quota: WindowQuota | null, weekly: boolean, now: number): string {
   const resetsAt = quota?.resetsAt;
-  if (!resetsAt) return "-";
+  // Upstream sends no reset clock while a window is idle: Anthropic returns
+  // five_hour.resets_at = null (isActive: false) until the window is used
+  // again. "full" distinguishes that from missing/broken data.
+  if (!resetsAt) return quota?.remainingPercent === 100 ? "full" : "-";
   const reset = Date.parse(resetsAt);
   if (!Number.isFinite(reset)) return "-";
   const remaining = Math.max(0, reset - now);
@@ -409,12 +411,10 @@ export function formatUsageSubsLines(
 
   const header = ["Sub", "5h used", "5h resets in", "Weekly used", "Weekly resets in", "Credits"];
   const rows = data.subscriptions.map((sub) => [
-    // Schema v2 names the provider in each record: surface it in the Sub cell.
-    // Legacy payloads have no provider and keep the previous label verbatim.
-    (() => {
-      const id = sub.provider ? `${sub.provider}:${sub.name}` : sub.name;
-      return sub.plan ? `${id} (${sub.plan})` : id;
-    })(),
+    // Schema v2 names the provider in each record: `provider:account`, no
+    // plan suffix (the table must fit medium-width terminals). Legacy
+    // payloads have no provider and fall back to their name.
+    sub.provider ? `${sub.provider}:${sub.name}` : sub.name,
     sub.error ? `(error: ${sub.error})` : formatWindowCell(sub.session5h, sub.credits.session, false, color, now),
     sub.error ? "-" : formatResetsCell(sub.credits.session, false, now),
     sub.error ? "-" : formatWindowCell(sub.weekly, sub.credits.weekly, true, color, now),

@@ -236,7 +236,7 @@ describe("formatUsageSubsLines", () => {
     const lines = formatUsageSubsLines(sampleBody());
     expect(lines[0]).toMatch(/Usage subscriptions \(generated at \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(.+\)\):/);
     expect(lines[1].includes("Sub") && lines[1].includes("5h used") && lines[1].includes("Credits")).toBe(true);
-    expect(lines.some((l) => l.includes("alpha (Pro)") && /\$5\.00 \/ \$10\.00/.test(l))).toBe(true);
+    expect(lines.some((l) => l.startsWith("alpha") && /\$5\.00 \/ \$10\.00/.test(l))).toBe(true);
     expect(lines.some((l) => /\$20\.00 \/ \$50\.00/.test(l))).toBe(true);
     expect(
       lines.some((l) =>
@@ -286,8 +286,8 @@ describe("formatUsageSubsLines", () => {
     });
     expect(lines.some((l) => /\bbeta\b/.test(l))).toBe(true);
     expect(lines.some((l) => l.includes("(beta)"))).toBe(false);
-    expect(lines.some((l) => /5 reqs · 300 tok/.test(l))).toBe(true);
-    expect(lines.some((l) => /50 reqs · 3,000 tok/.test(l))).toBe(true);
+    // Request/token counters were dropped: no quota + no money renders a dash.
+    expect(lines.some((l) => l.includes(" - "))).toBe(true);
     expect(lines.some((l) => l.includes("included $"))).toBe(false);
   });
 
@@ -330,7 +330,7 @@ describe("formatUsageSubsLines", () => {
         },
       ],
     });
-    expect(lines.some((l) => l.includes("gamma (Basic)"))).toBe(true);
+    expect(lines.some((l) => l.startsWith("gamma"))).toBe(true);
     expect(lines.some((l) => l.includes("(error: upstream rate limit exceeded)"))).toBe(true);
     expect(lines.some((l) => l.includes("included $"))).toBe(false);
   });
@@ -341,12 +341,12 @@ describe("formatUsageSubsLines schema v2", () => {
     const subs = body.subscriptions as Record<string, unknown>[];
     subs[0] = { ...subs[0], provider: "chatgpt", account: "alpha", status: "ok" };
     const text = formatUsageSubsLines(body as never).join("\n");
-    expect(text).toContain("chatgpt:alpha (Pro)");
+    expect(text).toContain("chatgpt:alpha");
   });
 
   it("keeps legacy rows unprefixed when the payload has no provider", () => {
     const text = formatUsageSubsLines(sampleBody()).join("\n");
-    expect(text).toContain("alpha (Pro)");
+    expect(text).toContain("alpha");
     expect(text).not.toContain("chatgpt:");
   });
 });
@@ -666,7 +666,7 @@ describe("formatUsageSubsLines window pace collector bounds", () => {
     // 85.47 -> ~15%, 88.15 -> ~12%); padded columns collapse to \s+ in patterns.
     expect(
       lines.some((l) =>
-        /legacy\s+.*15% 642 reqs\s+3 h 0 min\s+.*12% 15,740 reqs\s+4 d 12 h\s+purchased \$0\.00/.test(l),
+        /legacy\s+.*15%\s+3 h 0 min\s+.*12%\s+4 d 12 h\s+purchased \$0\.00/.test(l),
       ),
     ).toBe(true);
   });
@@ -749,7 +749,7 @@ describe("actsis_litellm_usage_subs tool", () => {
     });
     try {
       const result = await usageSubsExecute(makeDeps())({});
-      expect(result.content).toContain("alpha (Pro)");
+      expect(result.content).toContain("alpha");
       expect(result.content).toContain("5h used");
       expect(result.content).toContain("$20.00 / $50.00");
       expect(result.content).toContain("included $100.00");
