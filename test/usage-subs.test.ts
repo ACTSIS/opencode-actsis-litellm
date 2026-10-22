@@ -54,6 +54,9 @@ function sampleBody(): UsageSubscriptions {
     subscriptions: [
       {
         name: "alpha",
+        provider: null,
+        account: null,
+        status: null,
         plan: "Pro",
         session5h: {
           usageUsd: 5.0,
@@ -87,15 +90,15 @@ function sampleBody(): UsageSubscriptions {
 }
 
 describe("fetchUsageSubs", () => {
-  it("GETs /ollama-usage once with Bearer auth", async () => {
+  it("GETs /subs-usage once with Bearer auth", async () => {
     const { calls, restore } = stubGlobalFetch((call) => {
-      expect(call.url.pathname).toBe("/ollama-usage");
+      expect(call.url.pathname).toBe("/subs-usage");
       return jsonResponse(sampleBody());
     });
     try {
       const result = await fetchUsageSubs("http://gw.example:4000", "sk-test", 5_000);
       expect(calls.length).toBe(1);
-      expect(calls[0].url.toString()).toBe("http://gw.example:4000/ollama-usage");
+      expect(calls[0].url.toString()).toBe("http://gw.example:4000/subs-usage");
       expect(calls[0].request.headers.get("authorization")).toBe("Bearer sk-test");
       expect(result.generatedAt).toBe("2026-10-14T12:00:00Z");
       expect(result.subscriptions.length).toBe(1);
@@ -105,6 +108,59 @@ describe("fetchUsageSubs", () => {
       expect(result.subscriptions[0].weekly.usageUsd).toBe(20.0);
       expect(result.subscriptions[0].credits.includedUsd).toBe(100.0);
       expect(result.subscriptions[0].error).toBeNull();
+    } finally {
+      restore();
+    }
+  });
+
+  it("falls back to the legacy /ollama-usage alias on 404", async () => {
+    const { calls, restore } = stubGlobalFetch((call) => {
+      if (call.url.pathname === "/subs-usage") {
+        return new Response("not found", { status: 404 });
+      }
+      expect(call.url.pathname).toBe("/ollama-usage");
+      return jsonResponse(sampleBody());
+    });
+    try {
+      const result = await fetchUsageSubs("http://gw.example:4000", "sk-test", 5_000);
+      expect(calls.map((call) => call.url.pathname)).toEqual([
+        "/subs-usage", "/ollama-usage",
+      ]);
+      expect(result.subscriptions[0].name).toBe("alpha");
+    } finally {
+      restore();
+    }
+  });
+
+  it("parses schema v2 identity fields (provider/account/status)", async () => {
+    const { restore } = stubGlobalFetch(() =>
+      jsonResponse({
+        schemaVersion: 2,
+        generatedAt: "2026-10-22T19:25:15Z",
+        subscriptions: [{
+          id: "claude:default", provider: "claude", account: "default",
+          label: null, plan: "subscription", status: "critical",
+          name: "default",
+          session5h: { usageUsd: null, limitUsd: null, requests: null,
+                       inputTokens: null, outputTokens: null, from: null, until: null },
+          weekly: { usageUsd: null, limitUsd: null, requests: null,
+                    inputTokens: null, outputTokens: null, from: null, until: null },
+          credits: { includedUsd: null, includedBalanceUsd: null,
+                     purchasedUsd: null,
+                     session: { remainingPercent: 0,
+                                resetsAt: "2026-10-22T19:49:59Z" },
+                     weekly: null },
+          error: null,
+        }],
+      }),
+    );
+    try {
+      const result = await fetchUsageSubs("http://gw.example:4000", "sk-test", 5_000);
+      const sub = result.subscriptions[0];
+      expect(sub.provider).toBe("claude");
+      expect(sub.account).toBe("default");
+      expect(sub.status).toBe("critical");
+      expect(sub.credits.session?.remainingPercent).toBe(0);
     } finally {
       restore();
     }
@@ -195,6 +251,9 @@ describe("formatUsageSubsLines", () => {
       subscriptions: [
         {
           name: "beta",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: 3.5,
@@ -238,6 +297,9 @@ describe("formatUsageSubsLines", () => {
       subscriptions: [
         {
           name: "gamma",
+          provider: null,
+          account: null,
+          status: null,
           plan: "Basic",
           session5h: {
             usageUsd: null,
@@ -273,6 +335,22 @@ describe("formatUsageSubsLines", () => {
     expect(lines.some((l) => l.includes("included $"))).toBe(false);
   });
 
+describe("formatUsageSubsLines schema v2", () => {
+  it("prefixes the row with the provider when present", () => {
+    const body = sampleBody() as unknown as Record<string, unknown>;
+    const subs = body.subscriptions as Record<string, unknown>[];
+    subs[0] = { ...subs[0], provider: "chatgpt", account: "alpha", status: "ok" };
+    const text = formatUsageSubsLines(body as never).join("\n");
+    expect(text).toContain("chatgpt:alpha (Pro)");
+  });
+
+  it("keeps legacy rows unprefixed when the payload has no provider", () => {
+    const text = formatUsageSubsLines(sampleBody()).join("\n");
+    expect(text).toContain("alpha (Pro)");
+    expect(text).not.toContain("chatgpt:");
+  });
+});
+
 describe("formatUsageSubsLines colors", () => {
   const GREEN = "\x1b[38;2;34;197;94m";
   const YELLOW = "\x1b[38;2;234;179;8m";
@@ -285,6 +363,9 @@ describe("formatUsageSubsLines colors", () => {
       subscriptions: [
         {
           name: "legacy",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: null, limitUsd: null, requests: 100,
@@ -346,6 +427,9 @@ describe("formatUsageSubsLines window pace", () => {
       subscriptions: [
         {
           name: "paced",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: null, limitUsd: null, requests: 40,
@@ -396,6 +480,9 @@ describe("formatUsageSubsLines window pace", () => {
       subscriptions: [
         {
           name: "dollar",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: 5.0, limitUsd: 10.0, requests: 8,
@@ -428,6 +515,9 @@ describe("formatUsageSubsLines window pace", () => {
       subscriptions: [
         {
           name: "opaque",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: 5.0, limitUsd: 10.0, requests: 8,
@@ -467,6 +557,9 @@ describe("formatUsageSubsLines window pace collector bounds", () => {
       subscriptions: [
         {
           name: "live-bug",
+          provider: null,
+          account: null,
+          status: null,
           plan: "Pro",
           session5h: {
             usageUsd: null, limitUsd: null, requests: 2752,
@@ -500,6 +593,9 @@ describe("formatUsageSubsLines window pace collector bounds", () => {
       subscriptions: [
         {
           name: "closed",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: 6.0, limitUsd: 10.0, requests: 9,
@@ -533,6 +629,9 @@ describe("formatUsageSubsLines window pace collector bounds", () => {
       subscriptions: [
         {
           name: "legacy",
+          provider: null,
+          account: null,
+          status: null,
           plan: null,
           session5h: {
             usageUsd: null,
@@ -645,7 +744,7 @@ describe("actsis_litellm_usage_subs tool", () => {
 
   it("renders the per-subscription usage from the gateway", async () => {
     const { restore } = stubGlobalFetch((call) => {
-      expect(call.url.pathname).toBe("/ollama-usage");
+      expect(call.url.pathname).toBe("/subs-usage");
       return jsonResponse(sampleBody());
     });
     try {
