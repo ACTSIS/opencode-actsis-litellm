@@ -1,5 +1,19 @@
 # Changelog
 
+## Sin publicar — 2026-10-22 — usage-subs: contrato v2 y tabla compacta
+
+- Añadido: **`/subs-usage` como ruta canónica** con fallback a
+  `/ollama-usage` en 404, para seguir funcionando contra gateways anteriores
+  al rename.
+- Añadido: `SubscriptionUsage` acepta `provider`/`account`/`status` del
+  contrato v2; la columna `Sub` muestra `provider:account` (`chatgpt:0`,
+  `claude:0`) y queda verbatim en payloads legacy.
+- Cambiado: **tabla compacta** — sin contadores de requests/tokens ni sufijo de
+  plan; ancho máximo ~94 columnas contra el gateway productivo (antes ~130).
+- Cambiado: una ventana intacta sin reloj de reset muestra `full` en lugar de
+  `-` (Anthropic devuelve `five_hour.resets_at = null` mientras la ventana de
+  5 h no se usa).
+
 ## 0.6.3 — 2026-10-16 — Emparejada con pi-actsis-litellm
 
 - Añadido: **colores por umbral en las líneas de budget de los tools** — la
