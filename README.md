@@ -222,7 +222,8 @@ La pareja `/actsis-litellm-usage-subs` + tool `actsis_litellm_usage_subs`
 muestra el consumo de las suscripciones de Ollama Cloud del org tal como lo
 presenta el panel administrativo del proveedor: porcentaje **restante** de la
 ventana de 5 horas y de la ventana semanal, por suscripción, con tiempo restante
-hasta el reinicio y créditos, agregado por el collector del gateway (`/ollama-usage`).
+hasta el reinicio y créditos, agregado por el collector del gateway (`/subs-usage`,
+con fallback al alias legacy `/ollama-usage`).
 El formato es una tabla alineada con indicadores de barra coloreados según el
 porcentaje usado (verde ≤ 50%, amarillo 51-75%, naranja 76-90%, rojo > 90%),
 correlacionados con la fracción de la ventana ya transcurrida:
