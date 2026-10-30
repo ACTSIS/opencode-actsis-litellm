@@ -30,6 +30,16 @@ var CatalogError = class extends ActsisLiteLLMError {
     super("CATALOG_ERROR", message, options);
   }
 };
+var ImageError = class extends ActsisLiteLLMError {
+  constructor(message, options) {
+    super("IMAGE_ERROR", message, options);
+  }
+};
+var CommandError = class extends ActsisLiteLLMError {
+  constructor(message, options) {
+    super("COMMAND_ERROR", message, options);
+  }
+};
 
 // src/tls-config.ts
 var ONE_SHOT_ATTEMPTS = /* @__PURE__ */ new Set();
@@ -1043,14 +1053,15 @@ async function loadCachedModels(dir) {
     return null;
   }
 }
-async function saveCachedModels(models, dir) {
+async function saveCachedModels(models, dir, credential) {
   const file = cachePath(dir);
   await mkdir2(path2.dirname(file), { recursive: true });
   const tmpFile = `${file}.tmp.${process.pid}`;
   const toWrite = {
     version: CACHE_SCHEMA_VERSION,
     fetchedAt: Date.now(),
-    models
+    models,
+    ...credential ? { credential } : {}
   };
   try {
     await writeFile2(tmpFile, JSON.stringify(toWrite, null, 2), "utf8");
@@ -1062,6 +1073,56 @@ async function saveCachedModels(models, dir) {
     }
     throw err;
   }
+}
+function scopeFromCredential(credential) {
+  if (!credential) return void 0;
+  const kind = credential.type === "key" ? "api_key" : "oauth";
+  const scope = { kind };
+  if (kind === "oauth" && credential.metadata) {
+    const userId = credential.metadata.userId;
+    const teamId = credential.metadata.teamId;
+    if (typeof userId === "string" && userId) scope.userId = userId;
+    if (typeof teamId === "string" && teamId) scope.teamId = teamId;
+  }
+  return scope;
+}
+async function loadCachedScope(dir) {
+  const file = cachePath(dir);
+  try {
+    const raw = await readFile2(file, "utf8");
+    const parsed = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return null;
+    const fileData = parsed;
+    if (fileData.version !== CACHE_SCHEMA_VERSION) return null;
+    const credential = fileData.credential;
+    if (!credential || typeof credential !== "object") return null;
+    if (credential.kind !== "oauth" && credential.kind !== "api_key") {
+      return null;
+    }
+    const scope = { kind: credential.kind };
+    if (typeof credential.userId === "string" && credential.userId) {
+      scope.userId = credential.userId;
+    }
+    if (typeof credential.teamId === "string" && credential.teamId) {
+      scope.teamId = credential.teamId;
+    }
+    return scope;
+  } catch {
+    return null;
+  }
+}
+function catalogScopeLine(scope) {
+  if (!scope) return "Catalog scope: unknown (cache predates scope metadata)";
+  if (scope.kind === "api_key") return "Catalog scope: API key";
+  const team = scope.teamId ? ` (team ${scope.teamId})` : " (no team)";
+  return `Catalog scope: OAuth session${team}`;
+}
+function catalogScopeHint(modelIds, scope) {
+  if (!scope?.teamId) return void 0;
+  if (modelIds.length > 0 && modelIds.every((id) => id.startsWith("oc/"))) {
+    return "Only oc/* models are visible (session team scope). If you expect local or premium models, /login again and choose a team with that access.";
+  }
+  return void 0;
 }
 async function computeCacheAge(dir) {
   const file = cachePath(dir);
@@ -1968,7 +2029,7 @@ function parseNotFound(status) {
 }
 async function requestUsagePage(baseUrl, apiKey, timeoutMs, range, filters, fetchImpl) {
   const normalized = baseUrl.replace(/\/+$/, "");
-  const path7 = filters.aggregated ? `${normalized}/user/daily/activity/aggregated` : `${normalized}/user/daily/activity`;
+  const path9 = filters.aggregated ? `${normalized}/user/daily/activity/aggregated` : `${normalized}/user/daily/activity`;
   const params = new URLSearchParams({
     start_date: range.startDate,
     end_date: range.endDate
@@ -1978,7 +2039,7 @@ async function requestUsagePage(baseUrl, apiKey, timeoutMs, range, filters, fetc
   if (filters.pageSize !== void 0) params.set("page_size", String(filters.pageSize));
   let response;
   try {
-    response = await fetchImpl(`${path7}?${params.toString()}`, {
+    response = await fetchImpl(`${path9}?${params.toString()}`, {
       headers: { Authorization: `Bearer ${apiKey}` },
       signal: AbortSignal.timeout(timeoutMs)
     });
@@ -2407,7 +2468,10 @@ function asCredits(value) {
 function asSubscription(value) {
   const record = asRecord3(value);
   return {
-    name: asString(record.name) ?? "unknown",
+    name: asString(record.name) ?? asString(record.account) ?? "unknown",
+    provider: asString(record.provider),
+    account: asString(record.account),
+    status: asString(record.status),
     plan: asString(record.plan),
     session5h: asWindowUsage(record.session5h),
     weekly: asWindowUsage(record.weekly),
@@ -2424,13 +2488,17 @@ function parseUsageSubscriptions(body) {
 }
 async function fetchUsageSubs(gatewayUrl, apiKey, timeoutMs, fetchImpl = globalThis.fetch) {
   const normalized = gatewayUrl.replace(/\/+$/, "");
-  const url = `${normalized}/ollama-usage`;
+  const headers = { Authorization: `Bearer ${apiKey}` };
+  const request = (path9) => fetchImpl(`${normalized}${path9}`, {
+    headers,
+    signal: AbortSignal.timeout(timeoutMs)
+  });
   let response;
   try {
-    response = await fetchImpl(url, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(timeoutMs)
-    });
+    response = await request("/subs-usage");
+    if (response.status === 404) {
+      response = await request("/ollama-usage");
+    }
   } catch (err) {
     throw new CatalogError(
       `Failed to fetch usage-subs: ${fetchFailureMessage(err)}`,
@@ -2466,16 +2534,14 @@ async function fetchUsageSubs(gatewayUrl, apiKey, timeoutMs, fetchImpl = globalT
 }
 function formatWindowCell(window, quota, weekly, color, now) {
   const usage = window.usageUsd ?? 0;
-  const requests = window.requests ?? 0;
   const elapsed = windowElapsedPercent(window, quota, weekly, now);
   if (quota != null && quota.remainingPercent != null) {
     const used = clampPercent(100 - quota.remainingPercent);
     const pace = paceOverElapsed(used, elapsed);
     const ahead = pace != null && pace > 1;
-    const run = `${usageGauge(used)} ${Math.round(used)}%${paceProjectionSuffix(used, elapsed)} ${requests.toLocaleString("en-US")} reqs`;
+    const run = `${usageGauge(used)} ${Math.round(used)}%${paceProjectionSuffix(used, elapsed)}`;
     return color ? `${gaugeColorAnsi(escalatedUsedPercent(used, ahead))}${run}${GAUGE_ANSI_RESET_DIM}` : run;
   }
-  const tokens = (window.inputTokens ?? 0) + (window.outputTokens ?? 0);
   if (window.limitUsd != null) {
     const limit = window.limitUsd;
     const percent = limit > 0 ? clampPercent(usage / limit * 100) : usage > 0 ? 100 : 0;
@@ -2484,11 +2550,11 @@ function formatWindowCell(window, quota, weekly, color, now) {
     const run = `${usageGauge(percent)} $${usage.toFixed(2)} / $${limit.toFixed(2)}${paceProjectionSuffix(percent, elapsed)}`;
     return color ? `${gaugeColorAnsi(escalatedUsedPercent(percent, ahead))}${run}${GAUGE_ANSI_RESET_DIM}` : run;
   }
-  return `${requests.toLocaleString("en-US")} reqs \xB7 ${tokens.toLocaleString("en-US")} tok`;
+  return "-";
 }
 function formatResetsCell(quota, weekly, now) {
   const resetsAt = quota?.resetsAt;
-  if (!resetsAt) return "-";
+  if (!resetsAt) return quota?.remainingPercent === 100 ? "full" : "-";
   const reset = Date.parse(resetsAt);
   if (!Number.isFinite(reset)) return "-";
   const remaining = Math.max(0, reset - now);
@@ -2524,7 +2590,10 @@ function formatUsageSubsLines(data, options = {}) {
   }
   const header = ["Sub", "5h used", "5h resets in", "Weekly used", "Weekly resets in", "Credits"];
   const rows = data.subscriptions.map((sub) => [
-    sub.plan ? `${sub.name} (${sub.plan})` : sub.name,
+    // Schema v2 names the provider in each record: `provider:account`, no
+    // plan suffix (the table must fit medium-width terminals). Legacy
+    // payloads have no provider and fall back to their name.
+    sub.provider ? `${sub.provider}:${sub.name}` : sub.name,
     sub.error ? `(error: ${sub.error})` : formatWindowCell(sub.session5h, sub.credits.session, false, color, now),
     sub.error ? "-" : formatResetsCell(sub.credits.session, false, now),
     sub.error ? "-" : formatWindowCell(sub.weekly, sub.credits.weekly, true, color, now),
@@ -2756,6 +2825,7 @@ function buildLitellmToolInfos(deps) {
       `Provider: ${providerId}`,
       `Auth: ${authType} (expires ${authExpiry})`,
       `Catalog: ${cacheCount} models cached (age ${ageText})`,
+      catalogScopeLine(await loadCachedScope(stateDir)),
       `Gateway URL: ${gatewayUrl}`,
       ...budgetLines
     ];
@@ -2824,11 +2894,18 @@ function buildLitellmToolInfos(deps) {
     for (const model of fresh) {
       record[model.name] = model;
     }
-    await saveCachedModels(record, stateDir);
+    const scope = await credentialScope();
+    await saveCachedModels(record, stateDir, scope ?? void 0);
     const currentIds = Object.keys(record);
     const added = currentIds.filter((id) => !previousSet.has(id)).length;
     const removed = previousIds.filter((id) => !record[id]).length;
-    return `Model catalog synced: ${currentIds.length} models available (added ${added}, removed ${removed}). Restart OpenCode to see new models in the picker.`;
+    const lines = [
+      `Model catalog synced: ${currentIds.length} models available (added ${added}, removed ${removed}). Restart OpenCode to see new models in the picker.`,
+      catalogScopeLine(scope)
+    ];
+    const hint = catalogScopeHint(currentIds, scope);
+    if (hint) lines.push(hint);
+    return lines.join("\n");
   };
   const credentialMetadata = async () => {
     if (!deps.getCredential) return null;
@@ -2838,6 +2915,13 @@ function buildLitellmToolInfos(deps) {
     } catch {
       return null;
     }
+  };
+  const credentialScope = async () => {
+    const scope = scopeFromCredential(await credentialMetadata());
+    if (scope) return scope;
+    const entry = await readEntry(deps);
+    if (!entry) return null;
+    return { kind: entry.type === "api" ? "api_key" : "oauth" };
   };
   const usage = async (args) => {
     const parsed = parseUsageRangeArg(args);
@@ -3098,6 +3182,529 @@ function buildLitellmToolInfos(deps) {
   ];
 }
 
+// src/image-tool.ts
+import os7 from "os";
+import { pathToFileURL } from "url";
+import path8 from "path";
+import { readFile as readFile6 } from "fs/promises";
+
+// src/image.ts
+import { mkdir as mkdir4, writeFile as writeFile5 } from "fs/promises";
+import path7 from "path";
+var IMAGE_DEFAULT_MODEL = "sdxl-pixel-art";
+var IMAGE_OUTPUT_FORMAT = "png";
+var IMAGE_SIZE_MAP = /* @__PURE__ */ new Map([
+  ["512", "512x512"],
+  ["768", "768x768"],
+  ["1024", "1024x1024"]
+]);
+var IMAGE_USAGE = "Usage: image <prompt> [--size 512|768|1024]";
+function imageTimeoutMs(requestTimeoutMs) {
+  const MIN_IMAGE_TIMEOUT_MS = 18e4;
+  return Math.max(requestTimeoutMs ?? 0, MIN_IMAGE_TIMEOUT_MS);
+}
+function parseImageArgs(args) {
+  const words = args.trim().split(/\s+/).filter((w) => w.length > 0);
+  if (words.length === 0 || words.every((w) => w === "--")) {
+    throw new CommandError(IMAGE_USAGE);
+  }
+  let size = "512";
+  const promptWords = [];
+  for (let i = 0; i < words.length; i++) {
+    if (words[i] === "--size") {
+      const value = words[i + 1] ?? "";
+      if (!IMAGE_SIZE_MAP.has(value)) {
+        throw new CommandError(
+          `Unsupported size "${value}" (allowed: 512, 768, 1024)`
+        );
+      }
+      size = value;
+      i++;
+      continue;
+    }
+    promptWords.push(words[i]);
+  }
+  const prompt = promptWords.join(" ").trim();
+  if (!prompt) {
+    throw new CommandError(IMAGE_USAGE);
+  }
+  return {
+    prompt,
+    size: IMAGE_SIZE_MAP.get(size) ?? "512x512",
+    model: IMAGE_DEFAULT_MODEL
+  };
+}
+function extractB64Images(body) {
+  const data = body !== null && typeof body === "object" && Array.isArray(body.data) ? body.data : [];
+  const images = [];
+  for (const entry of data) {
+    if (typeof entry === "object" && entry !== null) {
+      const b64 = entry.b64_json;
+      if (typeof b64 === "string" && b64.length > 0) images.push(b64);
+    }
+  }
+  return images;
+}
+async function fetchImageGeneration(baseUrl, apiKey, options, timeoutMs, fetchImpl = globalThis.fetch) {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  let response;
+  try {
+    response = await fetchImpl(`${normalized}/v1/images/generations`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: options.model,
+        prompt: options.prompt,
+        n: 1,
+        size: options.size,
+        output_format: IMAGE_OUTPUT_FORMAT
+      }),
+      signal: AbortSignal.timeout(imageTimeoutMs(timeoutMs))
+    });
+  } catch (err) {
+    throw new ImageError(
+      `Failed to reach gateway images endpoint: ${fetchFailureMessage(err)}`,
+      { cause: err }
+    );
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new AuthError("Credential rejected by gateway. Run /login again.");
+  }
+  if (!response.ok) {
+    throw new ImageError(
+      `Image generation failed: ${response.status}: ${response.statusText} (spend, if any, shows in the usage tool)`
+    );
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch (err) {
+    throw new ImageError(
+      `Images response is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err }
+    );
+  }
+  const images = extractB64Images(body);
+  if (images.length === 0) {
+    throw new ImageError(
+      "Images response had no b64_json payloads (model may have failed after billing)"
+    );
+  }
+  return { images, model: options.model, size: options.size };
+}
+async function saveImageB64(data, dir) {
+  await mkdir4(dir, { recursive: true });
+  const filePath = path7.join(dir, `actsis-image-${Date.now()}.png`);
+  await writeFile5(filePath, Buffer.from(data, "base64"));
+  return filePath;
+}
+
+// src/image-tool.ts
+var IMAGE_TOOL_NAME = "actsis_litellm_generate_image";
+var EDIT_MODEL_HINT = "edit";
+var IMAGE_COMMAND_TOOL_NAME = "actsis_litellm_image";
+var LEGACY_IMAGE_INPUT = {
+  type: "object",
+  properties: {
+    args: {
+      type: "string",
+      description: "The image request: the prompt, optionally followed by --size 512|768|1024 (default 512)."
+    }
+  },
+  additionalProperties: false
+};
+var GENERATE_IMAGE_INPUT = {
+  type: "object",
+  properties: {
+    prompt: {
+      type: "string",
+      description: "Image description or edit instruction."
+    },
+    size: {
+      type: "string",
+      description: "Image size: 512, 768, 1024 or WIDTHxHEIGHT (default 512x512)."
+    },
+    model: {
+      type: "string",
+      description: "Image model id from this description's list (e.g. sdxl-pixel-art, qwen-image-edit)."
+    },
+    image: {
+      type: "string",
+      description: "Optional image input for edits: 'last' for the last generated image in this session, or a file path (png/jpg/webp)."
+    }
+  },
+  required: ["prompt"],
+  additionalProperties: false
+};
+function errorMessage(err) {
+  return err instanceof Error ? err.message : String(err);
+}
+function imageResultParts(label, filePath) {
+  const parts = [{ type: "text", text: label }];
+  if (filePath) {
+    parts.push({
+      type: "file",
+      uri: pathToFileURL(filePath).href,
+      mime: "image/png",
+      name: path8.basename(filePath)
+    });
+    parts.push({
+      type: "text",
+      text: `![generated image](${filePath})
+Saved copy: ${filePath}`
+    });
+  } else {
+    parts.push({ type: "text", text: "Image rendered in-session; the png copy could not be written." });
+  }
+  return parts;
+}
+function extractImageModelIds(body) {
+  const data = body !== null && typeof body === "object" && Array.isArray(body.data) ? body.data : [];
+  const ids = [];
+  for (const entry of data) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const e = entry;
+    const id = typeof e.id === "string" ? e.id : "";
+    if (!id) continue;
+    let mode = e.mode;
+    if (mode === void 0 && e.model_info && typeof e.model_info === "object") {
+      mode = e.model_info.mode;
+    }
+    if (mode === "image_generation") ids.push(id);
+  }
+  return ids;
+}
+async function discoverImageModels(baseUrl, apiKey, timeoutMs = 15e3, fetchImpl = globalThis.fetch) {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  let response;
+  try {
+    response = await fetchImpl(`${normalized}/v1/models?include_metadata=true`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+  } catch {
+    return [];
+  }
+  if (!response.ok) return [];
+  let body;
+  try {
+    body = await response.json();
+  } catch {
+    return [];
+  }
+  return extractImageModelIds(body).map((id) => ({ id }));
+}
+function resolveImageModel(explicit, hasImageInput, discovered = []) {
+  if (explicit && explicit.length > 0) {
+    const model = discovered.includes(explicit) ? explicit : discovered.find((m) => m.startsWith(explicit)) ?? explicit;
+    return { model, askedHint: false };
+  }
+  if (hasImageInput) {
+    const editModel = discovered.find((m) => m.toLowerCase().includes(EDIT_MODEL_HINT)) ?? `qwen-image-${EDIT_MODEL_HINT}`;
+    return { model: editModel, askedHint: true };
+  }
+  if (discovered.includes(IMAGE_DEFAULT_MODEL) || discovered.length === 0) {
+    return { model: IMAGE_DEFAULT_MODEL, askedHint: false };
+  }
+  return { model: discovered[0], askedHint: true };
+}
+function imageToolTimeoutMs(model, size) {
+  const width = parseInt(size.split("x")[0] ?? "512", 10);
+  if (model.toLowerCase().includes("qwen")) {
+    return Number.isFinite(width) && width >= 1024 ? 6e5 : 3e5;
+  }
+  return 18e4;
+}
+var ImageSessionStore = class {
+  last_ = null;
+  set(image) {
+    this.last_ = image;
+  }
+  get() {
+    return this.last_;
+  }
+  clear() {
+    this.last_ = null;
+  }
+};
+var MIME_MAP = /* @__PURE__ */ new Map([
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".webp", "image/webp"]
+]);
+async function resolveImageInput(input, store) {
+  if (input === "last" || input === "\xFAltima" || input === "last_image") {
+    const prev = store.get();
+    if (!prev) {
+      throw new CommandError(
+        "No previous image in this session: generate one first or pass a file path."
+      );
+    }
+    return prev;
+  }
+  const ext = path8.extname(input).toLowerCase();
+  const mimeType = MIME_MAP.get(ext);
+  if (!mimeType) {
+    throw new CommandError(
+      `Unsupported image type "${ext || "(none)"}" (png/jpg/jpeg/webp expected)`
+    );
+  }
+  const data = (await readFile6(input)).toString("base64");
+  return { data, mimeType, filePath: input };
+}
+async function fetchImageEdit(baseUrl, apiKey, options, timeoutMs, fetchImpl = globalThis.fetch) {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  const form = new FormData();
+  form.append("model", options.model);
+  form.append("prompt", options.prompt);
+  form.append("n", "1");
+  form.append(
+    "image[]",
+    new Blob([Buffer.from(options.image.data, "base64")], { type: options.image.mimeType }),
+    "input.png"
+  );
+  let response;
+  try {
+    response = await fetchImpl(`${normalized}/v1/images/edits`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form,
+      signal: AbortSignal.timeout(timeoutMs ?? 18e4)
+    });
+  } catch (err) {
+    throw new ImageError(
+      `Failed to reach gateway images edits endpoint: ${fetchFailureMessage(err)}`,
+      { cause: err }
+    );
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new AuthError("Credential rejected by gateway. Run /login again.");
+  }
+  if (!response.ok) {
+    throw new ImageError(
+      `Image edit failed: ${response.status}: ${response.statusText} (spend, if any, shows in the usage tool)`
+    );
+  }
+  let body;
+  try {
+    body = await response.json();
+  } catch (err) {
+    throw new ImageError(
+      `Images edits response is not valid JSON: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err }
+    );
+  }
+  const images = extractB64Images(body);
+  if (images.length === 0) {
+    throw new ImageError(
+      "Images edits response had no b64_json payloads (model may have failed after billing)"
+    );
+  }
+  return { images, model: options.model, size: "as-edited" };
+}
+function normalizeSize(size) {
+  if (!size) return "512x512";
+  const numeric = parseInt(size, 10);
+  if (!Number.isNaN(numeric) && String(numeric) === size.trim()) {
+    return `${numeric}x${numeric}`;
+  }
+  const match = size.match(/^(\d+)x(\d+)$/i);
+  if (match) return `${match[1]}x${match[2]}`;
+  return "512x512";
+}
+function toolDescription(models) {
+  const options = models.length > 0 ? models.map((m) => `- ${m}`).join("\n") : "- (discover at call time \u2014 the gateway catalog defines the options)";
+  return [
+    "Generate or edit an image through the ACTSIS gateway (stable-diffusion.cpp models",
+    "on the Strix Halo workstation). Use this tool when the user asks for an",
+    "image in natural language, or to edit an existing image.",
+    "EVERY model here accepts BOTH use cases unless its own description says",
+    "otherwise: text-to-image generation FROM SCRATCH (no image param) AND",
+    "instruction-based editing (with the image param). A model id with 'edit' in",
+    "the name does NOT restrict it to editing.",
+    "Known capabilities:",
+    "- sdxl-pixel-art: text-to-image AND image inputs; style is BAKED IN",
+    "  (always pixel-art, the prompt's style keywords don't change it) \u2014 use",
+    "  it when the user wants pixel-art, or a fast/cheap render.",
+    "- qwen-image-edit: text-to-image (free style \u2014 realistic, 3D, flat,",
+    "  anything the prompt asks) AND instruction editing of a reference image;",
+    "  slower and heavier (512 ~1 min, 1024 ~5.5 min per image).",
+    "Style requests like 3D/realistic MUST go to a prompt-driven model",
+    "(qwen-image-edit), never to sdxl-pixel-art.",
+    "Discovered image models (ask the user which one they want when it is not",
+    "obvious; edits need a reference image):",
+    options,
+    "Selection rules: an explicit `model` param wins; with an `image` input",
+    "default to the editing-capable model (qwen-image-edit); otherwise the",
+    "gateway default (sdxl-pixel-art). Report the rendered result and mention",
+    "that large sizes are slower."
+  ].join("\n");
+}
+function buildImageToolInfos(deps) {
+  const {
+    stateDir,
+    fetchImpl = globalThis.fetch,
+    timeout,
+    onRefreshed,
+    imageModels,
+    store: externalStore
+  } = deps;
+  const store = externalStore ?? new ImageSessionStore();
+  const resolveContext = async () => {
+    const entry = await readEntry(deps);
+    if (!entry) {
+      return { reason: "Not signed in \u2014 run /login and choose ACTSIS LiteLLM." };
+    }
+    const state = await readPluginState(stateDir);
+    if (!state?.gatewayUrl) {
+      return { reason: "Gateway URL not configured." };
+    }
+    if (entry.type === "api") {
+      return { baseUrl: state.gatewayUrl, token: entry.key };
+    }
+    const token = await ensureFreshToken(
+      { access: entry.access, refresh: entry.refresh, expires: entry.expires },
+      { state, timeoutMs: timeout ?? 3e4, fetchImpl, onRefreshed }
+    );
+    return { baseUrl: state.gatewayUrl, token };
+  };
+  const legacyImage = async (args) => {
+    let parsed;
+    try {
+      parsed = parseImageArgs(args ?? "");
+    } catch (err) {
+      return { content: errorMessage(err) };
+    }
+    const resolved = await resolveContext().catch((err) => ({
+      reason: `Image unavailable: ${errorMessage(err)}`
+    }));
+    if ("reason" in resolved) return { content: resolved.reason };
+    try {
+      const result = await fetchImageGeneration(
+        resolved.baseUrl,
+        resolved.token,
+        { prompt: parsed.prompt, model: parsed.model, size: parsed.size },
+        timeout,
+        fetchImpl
+      );
+      const data = result.images[0];
+      let filePath;
+      try {
+        filePath = await saveImageB64(data, deps.imageSaveDir ?? os7.tmpdir());
+      } catch {
+      }
+      store.set({ data, mimeType: "image/png", filePath });
+      return {
+        content: imageResultParts(
+          `image "${parsed.prompt}" \u2014 ${result.model} ${result.size}`,
+          filePath
+        ),
+        metadata: { model: result.model, size: result.size, filePath }
+      };
+    } catch (err) {
+      return { content: errorMessage(err) };
+    }
+  };
+  const generateImage = async (input, context) => {
+    const prompt = typeof input.prompt === "string" ? input.prompt.trim() : "";
+    if (!prompt) {
+      return { content: "A prompt is required." };
+    }
+    const size = normalizeSize(
+      typeof input.size === "string" ? input.size : void 0
+    );
+    const explicitModel = typeof input.model === "string" ? input.model : void 0;
+    const imageInputArg = typeof input.image === "string" ? input.image : void 0;
+    const resolved = await resolveContext().catch((err) => ({
+      reason: `Image unavailable: ${errorMessage(err)}`
+    }));
+    if ("reason" in resolved) return { content: resolved.reason };
+    let imageInput = null;
+    if (imageInputArg) {
+      try {
+        imageInput = await resolveImageInput(imageInputArg, store);
+      } catch (err) {
+        return { content: errorMessage(err) };
+      }
+    }
+    const discovered = await discoverImageModels(
+      resolved.baseUrl,
+      resolved.token,
+      timeout ?? 15e3,
+      fetchImpl
+    ).catch(() => []);
+    const discoveredIds = discovered.map((m) => m.id);
+    const { model } = resolveImageModel(
+      explicitModel,
+      imageInput !== null,
+      discoveredIds
+    );
+    const progress = context.progress;
+    if (typeof progress === "function") {
+      try {
+        progress(
+          `Generating ${size} image with ${model}${imageInput ? " (edit)" : ""} \u2014 this takes a while...`
+        );
+      } catch {
+      }
+    }
+    try {
+      const timeoutMs = imageToolTimeoutMs(model, size);
+      const result = imageInput ? await fetchImageEdit(
+        resolved.baseUrl,
+        resolved.token,
+        { model, prompt, image: imageInput },
+        timeoutMs,
+        fetchImpl
+      ) : await fetchImageGeneration(
+        resolved.baseUrl,
+        resolved.token,
+        { prompt, model, size },
+        timeoutMs,
+        fetchImpl
+      );
+      const data = result.images[0];
+      let filePath;
+      try {
+        filePath = await saveImageB64(data, deps.imageSaveDir ?? os7.tmpdir());
+      } catch {
+      }
+      store.set({ data, mimeType: "image/png", filePath });
+      const label = imageInput ? `generate_image "${prompt}" (edit) \u2014 ${model} ${size}` : `generate_image "${prompt}" \u2014 ${model} ${size}`;
+      return {
+        content: imageResultParts(label, filePath),
+        metadata: { model, size, filePath, edited: imageInput !== null }
+      };
+    } catch (err) {
+      return { content: errorMessage(err) };
+    }
+  };
+  return [
+    {
+      name: IMAGE_COMMAND_TOOL_NAME,
+      description: `Generate an image through the ACTSIS gateway (stable-diffusion.cpp models; the default ${IMAGE_DEFAULT_MODEL} renders pixel-art). Input is the user's raw request: the prompt, optionally followed by \`--size 512|768|1024\`. Generation is synchronous and slow (about 15-60 s at 512, several minutes at 1024). The result carries the rendered image and the saved png path; relay that path to the user.`,
+      input: LEGACY_IMAGE_INPUT,
+      async execute(input) {
+        const args = typeof input.args === "string" ? input.args : void 0;
+        return legacyImage(args);
+      }
+    },
+    {
+      name: IMAGE_TOOL_NAME,
+      description: toolDescription(imageModels ?? []),
+      input: GENERATE_IMAGE_INPUT,
+      async execute(input, context) {
+        return generateImage(input, context);
+      }
+    }
+  ];
+}
+
 // src/plugin.ts
 var DEFAULT_PROVIDER_ID = "actsis-litellm";
 var DEFAULT_CATALOG_TTL_MS2 = 15 * 60 * 1e3;
@@ -3260,6 +3867,11 @@ function buildCommandDefinitions(existing) {
       name: "actsis-litellm-top",
       description: "Enable, disable or toggle the Top-5 spend widget (7 UTC days; args: on | off | toggle; omit to toggle).",
       template: "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then reply with its output verbatim in a fenced code block whose info string is exactly ansi \u2014 ANSI escape sequences included; do not summarize, reformat, or reprocess it."
+    },
+    {
+      name: "actsis-litellm-image",
+      description: "Generate an image through the gateway (pixel-art by default); args: <prompt> [--size 512|768|1024]",
+      template: "Use the actsis_litellm_image tool, passing the user's prompt and any --size flag they gave as its args input. Then report the saved png path and the model/size that produced it; do not summarize the image itself."
     },
     {
       name: "actsis-litellm-logout",
@@ -3585,13 +4197,33 @@ async function buildInitialModels(closure, getCredential) {
       for (const model of fresh) {
         record[model.name] = model;
       }
-      await saveCachedModels(record, closure.stateDir);
+      const scope = getCredential ? scopeFromCredential(await getCredential().catch(() => null)) : entry ? { kind: entry.type === "api" ? "api_key" : "oauth" } : void 0;
+      await saveCachedModels(record, closure.stateDir, scope);
       return toRecord(record);
     } catch {
       return toRecord(cachedRecord);
     }
   }
   return toRecord(cachedRecord);
+}
+async function discoverImageModelIds(closure, getCredential) {
+  const entry = await credentialEntry(closure, getCredential);
+  if (!entry) return [];
+  const token = entry.type === "oauth" ? entry.access : entry.key;
+  const state = await readPluginState(closure.stateDir);
+  const baseUrl = closure.baseUrl ?? (state?.gatewayUrl ? normalizeBaseUrl(state.gatewayUrl) : null);
+  if (!token || !baseUrl) return [];
+  try {
+    const options = await discoverImageModels(
+      baseUrl,
+      token,
+      closure.requestTimeoutMs,
+      globalThis.fetch
+    );
+    return options.map((o) => o.id);
+  } catch {
+    return [];
+  }
 }
 var plugin_default = Plugin.define({
   id: DEFAULT_PROVIDER_ID,
@@ -3617,6 +4249,7 @@ var plugin_default = Plugin.define({
         models: Object.values(initialModels)
       });
     });
+    const imageModelIds = await discoverImageModelIds(closure, getCredential);
     await context.tool.transform((editor) => {
       const toolDeps = {
         providerId: closure.providerId,
@@ -3625,6 +4258,9 @@ var plugin_default = Plugin.define({
         getCredential
       };
       for (const info of buildLitellmToolInfos(toolDeps)) {
+        editor.add(info);
+      }
+      for (const info of buildImageToolInfos({ ...toolDeps, imageModels: imageModelIds })) {
         editor.add(info);
       }
     });
@@ -3710,18 +4346,29 @@ var plugin_default = Plugin.define({
 });
 export {
   DEFAULT_PROVIDER_ID,
+  EDIT_MODEL_HINT,
+  IMAGE_COMMAND_TOOL_NAME,
+  IMAGE_TOOL_NAME,
+  ImageSessionStore,
   buildApiKeyMethodRegistration,
   buildAuthMethodRegistrations,
   buildCommandDefinitions,
+  buildImageToolInfos,
   buildInitialModels,
   buildLitellmToolInfos,
   buildOAuthMethodRegistration,
   buildProviderInfo,
   plugin_default as default,
+  discoverImageModels,
+  extractImageModelIds,
+  fetchImageEdit,
+  imageToolTimeoutMs,
   makeAuthFetch,
   mapModelConfigToInfo,
   normalizeThinkingOption,
   resolveClosure,
+  resolveImageInput,
+  resolveImageModel,
   resolveToolToken,
   runBudgetRefresh
 };

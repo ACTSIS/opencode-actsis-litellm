@@ -1,5 +1,35 @@
 # Changelog
 
+## Sin publicar — 2026-10-30 — paridad pi #48 y #47 (catálogo e imágenes)
+
+- Añadido: **scope de la credencial/equipo en el caché del catálogo** — la
+  caché guarda qué credencial la generó (login OAuth con `userId`/`teamId`, o
+  API key) como campo aditivo del esquema v2 (los cachés viejos se leen
+  igual); `/actsis-litellm-status` y `/actsis-litellm-models` lo muestran
+  (`Catalog scope: …`) y el tool de catálogo sugiere re-login cuando hay team y
+  el catálogo es solo `oc/*`. Causa raíz: el gateway recorta `/v1/models` por
+  el equipo elegido en el consent del login; no había nada que filtrar en el
+  plugin. Espejo de pi-actsis-litellm#48 (PR #49).
+- Añadido: **`/actsis-litellm-image` + tool `actsis_litellm_image`** —
+  generación de imágenes con `POST /v1/images/generations` (modelo
+  `sdxl-pixel-art`, `n=1`, png), flag `--size 512|768|1024` (default 512),
+  timeout de cliente de al menos 180 s y errores amigables sin perder el aviso
+  de spend; usa la misma credencial que el chat. El png se persiste siempre y
+  el resultado trae la imagen como adjunto (file-part) más su ruta como
+  fallback. Espejo de pi-actsis-litellm#47 (PR #49).
+- Añadido: **tool `actsis_litellm_generate_image`** — pedir imágenes
+  naturalmente en el chat: descubre los modelos de imagen del gateway
+  (`/v1/models`, modo `image_generation`) para la descripción y la selección
+  (param explícito > imagen de entrada → modelo de edición > default), edita
+  por instrucción con multipart `image[]` usando `image: "last"` o una ruta, y
+  usa timeouts adaptativos (Qwen 1024 = 600 s, Qwen 512/768 = 300 s, resto
+  180 s). Nombres de tool en el charset seguro de proveedores (sin `:`).
+  Espejo de pi-actsis-litellm#50/#52/#54/#56 (PRs #51/#53/#55).
+- Guard de regresión: los modelos con modo `image_generation` siguen excluidos
+  del selector de chat.
+- Docs: README (scope del catálogo, generación de imágenes) y mapa de módulos
+  de `docs/architecture.md`.
+
 ## Sin publicar — 2026-10-22 — usage-subs: contrato v2 y tabla compacta
 
 - Añadido: **`/subs-usage` como ruta canónica** con fallback a
