@@ -39,6 +39,7 @@ import {
   resolveUsageRangeDays,
 } from "./usage.ts";
 import { buildLitellmToolInfos, type ToolDeps } from "./tools.ts";
+import { buildImageToolInfos } from "./image-tool.ts";
 
 const DEFAULT_PROVIDER_ID = "actsis-litellm";
 export { DEFAULT_PROVIDER_ID };
@@ -292,6 +293,13 @@ export function buildCommandDefinitions(existing?: Array<{ name: string }>): Com
       description: "Enable, disable or toggle the Top-5 spend widget (7 UTC days; args: on | off | toggle; omit to toggle).",
       template:
         "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then reply with its output verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.",
+    },
+    {
+      name: "actsis-litellm-image",
+      description:
+        "Generate an image through the gateway (pixel-art by default); args: <prompt> [--size 512|768|1024]",
+      template:
+        "Use the actsis_litellm_image tool, passing the user's prompt and any --size flag they gave as its args input. Then report the saved png path and the model/size that produced it; do not summarize the image itself.",
     },
     {
       name: "actsis-litellm-logout",
@@ -861,6 +869,9 @@ export default Plugin.define({
         getCredential,
       };
       for (const info of buildLitellmToolInfos(toolDeps)) {
+        editor.add(info as unknown);
+      }
+      for (const info of buildImageToolInfos(toolDeps)) {
         editor.add(info as unknown);
       }
     });

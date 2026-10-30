@@ -102,6 +102,20 @@ export interface ToolDeps {
 }
 
 /**
+ * Tool result content parts: plain text, or a file reference the host may
+ * render (images ride here — see src/image-tool.ts and odd/tasks/parity-47-48.md
+ * S2/S8). Mirrors @opencode/schema's Tool.Content union.
+ */
+export type ToolContentPart =
+  | { type: "text"; text: string }
+  | { type: "file"; uri: string; mime: string; name?: string };
+
+export interface ToolResult {
+  content: string | ReadonlyArray<ToolContentPart>;
+  metadata?: Record<string, unknown>;
+}
+
+/**
  * v2 tool shape (Tool.Info from @opencode/schema/tool): JSON Schema input,
  * an execute returning Tool.Result ({content}), no v1 `args` helper.
  */
@@ -109,7 +123,7 @@ export interface ToolInfo {
   name: string;
   description: string;
   input: { type: "object"; properties: Record<string, unknown>; additionalProperties: false };
-  execute: (input: Record<string, unknown>, context: unknown) => Promise<{ content: string }>;
+  execute: (input: Record<string, unknown>, context: unknown) => Promise<ToolResult>;
 }
 
 const EMPTY_INPUT = { type: "object" as const, properties: {}, additionalProperties: false as const };
