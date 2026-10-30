@@ -3342,7 +3342,7 @@ var GENERATE_IMAGE_INPUT = {
 function errorMessage(err) {
   return err instanceof Error ? err.message : String(err);
 }
-function imageResultParts(label, filePath) {
+function imageResultParts(label, filePath, data) {
   const parts = [{ type: "text", text: label }];
   if (filePath) {
     parts.push({
@@ -3356,9 +3356,18 @@ function imageResultParts(label, filePath) {
       text: `![generated image](${filePath})
 Saved copy: ${filePath}`
     });
-  } else {
-    parts.push({ type: "text", text: "Image rendered in-session; the png copy could not be written." });
+    return parts;
   }
+  parts.push({
+    type: "file",
+    uri: `data:image/png;base64,${data}`,
+    mime: "image/png",
+    name: "image.png"
+  });
+  parts.push({
+    type: "text",
+    text: "The png copy could not be written; the image is attached inline (data URI) only."
+  });
   return parts;
 }
 function extractImageModelIds(body) {
@@ -3419,27 +3428,32 @@ function imageToolTimeoutMs(model, size) {
   }
   return 18e4;
 }
+var DEFAULT_SESSION_KEY = "default";
 var ImageSessionStore = class {
-  last_ = null;
-  set(image) {
-    this.last_ = image;
+  last_ = /* @__PURE__ */ new Map();
+  set(image, sessionId = DEFAULT_SESSION_KEY) {
+    this.last_.set(sessionId, image);
   }
-  get() {
-    return this.last_;
+  get(sessionId = DEFAULT_SESSION_KEY) {
+    return this.last_.get(sessionId) ?? null;
   }
-  clear() {
-    this.last_ = null;
+  clear(sessionId = DEFAULT_SESSION_KEY) {
+    this.last_.delete(sessionId);
   }
 };
+function sessionKey(context) {
+  const id = context?.sessionID;
+  return typeof id === "string" && id ? id : DEFAULT_SESSION_KEY;
+}
 var MIME_MAP = /* @__PURE__ */ new Map([
   [".png", "image/png"],
   [".jpg", "image/jpeg"],
   [".jpeg", "image/jpeg"],
   [".webp", "image/webp"]
 ]);
-async function resolveImageInput(input, store) {
+async function resolveImageInput(input, store, sessionId = DEFAULT_SESSION_KEY) {
   if (input === "last" || input === "\xFAltima" || input === "last_image") {
-    const prev = store.get();
+    const prev = store.get(sessionId);
     if (!prev) {
       throw new CommandError(
         "No previous image in this session: generate one first or pass a file path."
@@ -3573,7 +3587,7 @@ function buildImageToolInfos(deps) {
     );
     return { baseUrl: state.gatewayUrl, token };
   };
-  const legacyImage = async (args) => {
+  const legacyImage = async (args, context) => {
     let parsed;
     try {
       parsed = parseImageArgs(args ?? "");
@@ -3598,11 +3612,12 @@ function buildImageToolInfos(deps) {
         filePath = await saveImageB64(data, deps.imageSaveDir ?? os7.tmpdir());
       } catch {
       }
-      store.set({ data, mimeType: "image/png", filePath });
+      store.set({ data, mimeType: "image/png", filePath }, sessionKey(context));
       return {
         content: imageResultParts(
           `image "${parsed.prompt}" \u2014 ${result.model} ${result.size}`,
-          filePath
+          filePath,
+          data
         ),
         metadata: { model: result.model, size: result.size, filePath }
       };
@@ -3627,7 +3642,11 @@ function buildImageToolInfos(deps) {
     let imageInput = null;
     if (imageInputArg) {
       try {
-        imageInput = await resolveImageInput(imageInputArg, store);
+        imageInput = await resolveImageInput(
+          imageInputArg,
+          store,
+          sessionKey(context)
+        );
       } catch (err) {
         return { content: errorMessage(err) };
       }
@@ -3674,11 +3693,19 @@ function buildImageToolInfos(deps) {
         filePath = await saveImageB64(data, deps.imageSaveDir ?? os7.tmpdir());
       } catch {
       }
-      store.set({ data, mimeType: "image/png", filePath });
-      const label = imageInput ? `generate_image "${prompt}" (edit) \u2014 ${model} ${size}` : `generate_image "${prompt}" \u2014 ${model} ${size}`;
+      store.set({ data, mimeType: "image/png", filePath }, sessionKey(context));
+      const edited = imageInput !== null;
+      const label = edited ? `generate_image "${prompt}" (edit) \u2014 ${model}` : `generate_image "${prompt}" \u2014 ${model} ${size}`;
+      const parts = imageResultParts(label, filePath, data);
+      if (edited && typeof input.size === "string" && input.size) {
+        parts.push({
+          type: "text",
+          text: "size applies to generation only; the edit kept the reference image's dimensions."
+        });
+      }
       return {
-        content: imageResultParts(label, filePath),
-        metadata: { model, size, filePath, edited: imageInput !== null }
+        content: parts,
+        metadata: edited ? { model, filePath, edited: true } : { model, size, filePath, edited: false }
       };
     } catch (err) {
       return { content: errorMessage(err) };
@@ -3689,9 +3716,9 @@ function buildImageToolInfos(deps) {
       name: IMAGE_COMMAND_TOOL_NAME,
       description: `Generate an image through the ACTSIS gateway (stable-diffusion.cpp models; the default ${IMAGE_DEFAULT_MODEL} renders pixel-art). Input is the user's raw request: the prompt, optionally followed by \`--size 512|768|1024\`. Generation is synchronous and slow (about 15-60 s at 512, several minutes at 1024). The result carries the rendered image and the saved png path; relay that path to the user.`,
       input: LEGACY_IMAGE_INPUT,
-      async execute(input) {
+      async execute(input, context) {
         const args = typeof input.args === "string" ? input.args : void 0;
-        return legacyImage(args);
+        return legacyImage(args, context);
       }
     },
     {
