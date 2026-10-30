@@ -10,6 +10,7 @@ import {
   loadCachedModels,
   saveCachedModels,
   computeCacheAge,
+  scopeFromCredential,
   type OpencodeModelConfig,
 } from "./catalog-cache.ts";
 import { fetchCatalogModels } from "./catalog.ts";
@@ -749,7 +750,14 @@ export async function buildInitialModels(
       for (const model of fresh) {
         record[model.name] = model;
       }
-      await saveCachedModels(record, closure.stateDir);
+      // Record which credential/team produced this catalog (issue pi #48 S3),
+      // same as the models tool does on a forced refresh.
+      const scope = getCredential
+        ? scopeFromCredential(await getCredential().catch(() => null))
+        : entry
+          ? { kind: entry.type === "api" ? ("api_key" as const) : ("oauth" as const) }
+          : undefined;
+      await saveCachedModels(record, closure.stateDir, scope);
       return toRecord(record);
     } catch {
       return toRecord(cachedRecord);
