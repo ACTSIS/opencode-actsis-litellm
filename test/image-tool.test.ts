@@ -292,8 +292,83 @@ describe("actsis_litellm_generate_image tool", () => {
     expect(paths).toContain("/v1/images/edits");
     expect(paths).not.toContain("/v1/images/generations");
     const parts = result.content as ToolContentPart[];
-    expect(parts[0]).toEqual({ type: "text", text: 'generate_image "hacelo 3D" (edit) — qwen-image-edit 512x512' });
+    // Edits never send a size, so the result must not claim one.
+    expect(parts[0]).toEqual({ type: "text", text: 'generate_image "hacelo 3D" (edit) — qwen-image-edit' });
     expect(result.metadata).toMatchObject({ model: "qwen-image-edit", edited: true });
+    expect((result.metadata as { size?: string }).size).toBeUndefined();
+    const note = parts.find(
+      (p) => p.type === "text" && p.text.includes("size applies to generation only"),
+    );
+    expect(note).toBeDefined();
+  });
+
+  it("keeps 'last' per session so a server session never edits another's image", async () => {
+    const store = new ImageSessionStore();
+    const paths: string[] = [];
+    const fetchImpl = gateway((url) => {
+      paths.push(url.pathname);
+      if (url.pathname === "/v1/models") {
+        return new Response(
+          JSON.stringify({ data: [{ id: "qwen-image-edit", mode: "image_generation" }] }),
+        );
+      }
+      return new Response(JSON.stringify({ data: [{ b64_json: ONE_PNG }] }));
+    });
+
+    const info = buildImageToolInfos({
+      providerId: "actsis-litellm",
+      stateDir: tmpDir,
+      authPath,
+      imageSaveDir: imageDir,
+      store,
+      fetchImpl,
+    }).find((t) => t.name === IMAGE_TOOL_NAME)!;
+    const sessionA = { sessionID: "session-a" } as unknown as Record<string, unknown>;
+    const sessionB = { sessionID: "session-b" } as unknown as Record<string, unknown>;
+    const editIn = (session: Record<string, unknown>) =>
+      info.execute({ prompt: "hacelo 3D", image: "last" }, session) as Promise<{
+        content: string | ReadonlyArray<ToolContentPart>;
+      }>;
+
+    await info.execute({ prompt: "un zorro" }, sessionA);
+    // Session B has no image of its own: it must not inherit session A's.
+    const other = await editIn(sessionB);
+    expect(other.content).toMatch(/No previous image in this session/);
+    expect(paths).not.toContain("/v1/images/edits");
+
+    // Its own session still resolves its last image.
+    const own = await editIn(sessionA);
+    expect(paths).toContain("/v1/images/edits");
+    expect(Array.isArray(own.content)).toBe(true);
+  });
+
+  it("carries the image as a data URI when the png copy cannot be written", async () => {
+    const blockedDir = path.join(tmpDir, "blocked");
+    await writeFile(blockedDir, "not a directory");
+    const fetchImpl = gateway(() => new Response(JSON.stringify({ data: [{ b64_json: ONE_PNG }] })));
+
+    const info = buildImageToolInfos({
+      providerId: "actsis-litellm",
+      stateDir: tmpDir,
+      authPath,
+      imageSaveDir: path.join(blockedDir, "images"),
+      fetchImpl,
+    }).find((t) => t.name === IMAGE_TOOL_NAME)!;
+
+    const result = (await info.execute({ prompt: "x" }, {})) as {
+      content: string | ReadonlyArray<ToolContentPart>;
+      metadata?: Record<string, unknown>;
+    };
+    const parts = result.content as ToolContentPart[];
+    const file = parts.find((p) => p.type === "file") as
+      | { type: "file"; uri: string; mime: string }
+      | undefined;
+    expect(file).toBeDefined();
+    expect(file!.mime).toBe("image/png");
+    expect(file!.uri).toBe(`data:image/png;base64,${ONE_PNG}`);
+    expect(result.metadata?.filePath).toBeUndefined();
+    const tail = parts[parts.length - 1] as { type: "text"; text: string };
+    expect(tail.text).toMatch(/png copy could not be written/);
   });
 
   it("reports the failure as text without throwing", async () => {
