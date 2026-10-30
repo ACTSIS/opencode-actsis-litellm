@@ -99,3 +99,21 @@ credencial/equipo del catálogo (issue pi #48) y generación/edición de imágen
   >= 2.0.0) de que el TUI pinta el file-part del resultado; no se puede correr
   en esta máquina (host instalado 1.18.31, ver L4). El fallback por ruta queda
   emitido en el mismo resultado.
+- L9 (revisión nativa, 2026-10-30): `assess` → risk medium, sin verifier
+  independiente; `review start` (lineage `review-75c696c4d79f4302`, lentes
+  resilience/readability/reliability) → 3 reviewers (`review-resilience`,
+  `review-readability`, `review-reliability`) → refuter del proveedor →
+  **5 findings CRITICAL causados por el candidato** y `correction_required`.
+  Corrección acotada (`302910d`, 172 líneas declaradas y usadas, presupuesto
+  200): (1) un fallo al escribir el png ya no devuelve un resultado con forma
+  de éxito sin imagen — los bytes viajan como data URI; (2) `ImageSessionStore`
+  queda indexado por `sessionID`, así una sesión no puede editar la imagen de
+  otra; (3) las ediciones ya no reportan un tamaño que no se envía al gateway.
+  Plan de corrección capturado ANTES de commitear (el binding congelado exige
+  el target previo): el commit adelantado se revirtió con `reset --soft`, se
+  capturó el plan y se volvió a commitear. Validador dirigido → **approved**;
+  acknowledgement quemó la autoridad (`authority: burned`). Findings
+  informativos (12) quedan como follow-ups, no bloquean.
+- L10 (build, 2026-10-30): `dist/` se reconstruyó después del cierre del
+  review (el bundle generado no entra en el presupuesto de corrección de 200
+  líneas). Suite final 536/536, `tsc --noEmit` limpio, `tsup` OK.
