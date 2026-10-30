@@ -90,10 +90,17 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/** Relay-friendly result: summary, the image file part, and the saved path. */
+/**
+ * Relay-friendly result: summary, the image file part, and the saved path.
+ *
+ * The png copy is best effort, but the image itself is NOT: when the write
+ * fails the bytes still travel as an inline data URI and the text says so,
+ * so a failed copy can never turn into a success-shaped result with no image.
+ */
 export function imageResultParts(
   label: string,
   filePath: string | undefined,
+  data: string,
 ): ToolContentPart[] {
   const parts: ToolContentPart[] = [{ type: "text", text: label }];
   if (filePath) {
@@ -107,9 +114,18 @@ export function imageResultParts(
       type: "text",
       text: `![generated image](${filePath})\nSaved copy: ${filePath}`,
     });
-  } else {
-    parts.push({ type: "text", text: "Image rendered in-session; the png copy could not be written." });
+    return parts;
   }
+  parts.push({
+    type: "file",
+    uri: `data:image/png;base64,${data}`,
+    mime: "image/png",
+    name: "image.png",
+  });
+  parts.push({
+    type: "text",
+    text: "The png copy could not be written; the image is attached inline (data URI) only.",
+  });
   return parts;
 }
 
@@ -223,17 +239,31 @@ export interface SessionImage {
   filePath?: string;
 }
 
+/** Key for sessions that expose no id (single-session hosts and tests). */
+export const DEFAULT_SESSION_KEY = "default";
+
+/**
+ * Session-keyed image store for follow-up edits. The plugin builds its tools
+ * once, so one instance serves every session: "last" MUST be resolved per
+ * session id or a server session would edit another session's image.
+ */
 export class ImageSessionStore {
-  private last_: SessionImage | null = null;
-  set(image: SessionImage): void {
-    this.last_ = image;
+  private last_ = new Map<string, SessionImage>();
+  set(image: SessionImage, sessionId: string = DEFAULT_SESSION_KEY): void {
+    this.last_.set(sessionId, image);
   }
-  get(): SessionImage | null {
-    return this.last_;
+  get(sessionId: string = DEFAULT_SESSION_KEY): SessionImage | null {
+    return this.last_.get(sessionId) ?? null;
   }
-  clear(): void {
-    this.last_ = null;
+  clear(sessionId: string = DEFAULT_SESSION_KEY): void {
+    this.last_.delete(sessionId);
   }
+}
+
+/** Session identity of a tool call (absent on single-session hosts). */
+export function sessionKey(context: unknown): string {
+  const id = (context as { sessionID?: unknown } | null | undefined)?.sessionID;
+  return typeof id === "string" && id ? id : DEFAULT_SESSION_KEY;
 }
 
 const MIME_MAP = new Map<string, string>([
@@ -247,9 +277,10 @@ const MIME_MAP = new Map<string, string>([
 export async function resolveImageInput(
   input: string,
   store: ImageSessionStore,
+  sessionId: string = DEFAULT_SESSION_KEY,
 ): Promise<SessionImage> {
   if (input === "last" || input === "última" || input === "last_image") {
-    const prev = store.get();
+    const prev = store.get(sessionId);
     if (!prev) {
       throw new CommandError(
         "No previous image in this session: generate one first or pass a file path.",
@@ -412,7 +443,10 @@ export function buildImageToolInfos(deps: ImageToolDeps): ToolInfo[] {
     return { baseUrl: state.gatewayUrl, token };
   };
 
-  const legacyImage = async (args?: string): Promise<ToolResult> => {
+  const legacyImage = async (
+    args: string | undefined,
+    context?: unknown,
+  ): Promise<ToolResult> => {
     let parsed;
     try {
       parsed = parseImageArgs(args ?? "");
@@ -440,11 +474,12 @@ export function buildImageToolInfos(deps: ImageToolDeps): ToolInfo[] {
       } catch {
         // Best effort: the image still renders from the file part.
       }
-      store.set({ data, mimeType: "image/png", filePath });
+      store.set({ data, mimeType: "image/png", filePath }, sessionKey(context));
       return {
         content: imageResultParts(
           `image "${parsed.prompt}" — ${result.model} ${result.size}`,
           filePath,
+          data,
         ),
         metadata: { model: result.model, size: result.size, filePath },
       };
@@ -479,7 +514,11 @@ export function buildImageToolInfos(deps: ImageToolDeps): ToolInfo[] {
     let imageInput: SessionImage | null = null;
     if (imageInputArg) {
       try {
-        imageInput = await resolveImageInput(imageInputArg, store);
+        imageInput = await resolveImageInput(
+          imageInputArg,
+          store,
+          sessionKey(context),
+        );
       } catch (err) {
         return { content: errorMessage(err) };
       }
@@ -533,15 +572,27 @@ export function buildImageToolInfos(deps: ImageToolDeps): ToolInfo[] {
       try {
         filePath = await saveImageB64(data, deps.imageSaveDir ?? os.tmpdir());
       } catch {
-        // Best effort: the image still renders from the file part.
+        // Best effort: imageResultParts falls back to an inline data URI.
       }
-      store.set({ data, mimeType: "image/png", filePath });
-      const label = imageInput
-        ? `generate_image "${prompt}" (edit) — ${model} ${size}`
+      store.set({ data, mimeType: "image/png", filePath }, sessionKey(context));
+      // Edits do not send a size (the upstream keeps the reference image's
+      // dimensions), so the result must not claim one.
+      const edited = imageInput !== null;
+      const label = edited
+        ? `generate_image "${prompt}" (edit) — ${model}`
         : `generate_image "${prompt}" — ${model} ${size}`;
+      const parts = imageResultParts(label, filePath, data);
+      if (edited && typeof input.size === "string" && input.size) {
+        parts.push({
+          type: "text",
+          text: "size applies to generation only; the edit kept the reference image's dimensions.",
+        });
+      }
       return {
-        content: imageResultParts(label, filePath),
-        metadata: { model, size, filePath, edited: imageInput !== null },
+        content: parts,
+        metadata: edited
+          ? { model, filePath, edited: true }
+          : { model, size, filePath, edited: false },
       };
     } catch (err) {
       return { content: errorMessage(err) };
@@ -558,9 +609,9 @@ export function buildImageToolInfos(deps: ImageToolDeps): ToolInfo[] {
         "15-60 s at 512, several minutes at 1024). The result carries the rendered image and the " +
         "saved png path; relay that path to the user.",
       input: LEGACY_IMAGE_INPUT,
-      async execute(input) {
+      async execute(input, context) {
         const args = typeof input.args === "string" ? input.args : undefined;
-        return legacyImage(args);
+        return legacyImage(args, context);
       },
     },
     {
