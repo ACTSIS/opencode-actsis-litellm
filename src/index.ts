@@ -24,6 +24,15 @@ export {
   runBudgetRefresh,
 } from "./plugin.ts";
 
-export { buildLitellmToolInfos, resolveToolToken, type ToolDeps, type ToolInfo } from "./tools.ts";
+export {
+  buildLitellmToolInfos,
+  resolveToolToken,
+  type ToolContentPart,
+  type ToolDeps,
+  type ToolInfo,
+  type ToolResult,
+} from "./tools.ts";
+
+export { buildImageToolInfos, IMAGE_TOOL_NAME, type ImageToolDeps } from "./image-tool.ts";
 
 export type { PluginClosure, SetupContext } from "./plugin.ts";

@@ -322,7 +322,7 @@ describe("mapModelConfigToInfo", () => {
 });
 
 describe("buildCommandDefinitions", () => {
-  it("exposes all seven commands in v2 shape (name/description/template)", () => {
+  it("exposes all eight commands in v2 shape (name/description/template)", () => {
     const commands = buildCommandDefinitions();
     expect(commands.map((c) => c.name)).toEqual([
       "actsis-litellm-status",
@@ -331,6 +331,7 @@ describe("buildCommandDefinitions", () => {
       "actsis-litellm-usage",
       "actsis-litellm-usage-subs",
       "actsis-litellm-top",
+      "actsis-litellm-image",
       "actsis-litellm-logout",
     ]);
     expect(commands[0].template).toContain("actsis_litellm_status tool");
@@ -339,7 +340,8 @@ describe("buildCommandDefinitions", () => {
     expect(commands[3].template).toContain("actsis_litellm_usage tool");
     expect(commands[4].template).toContain("actsis_litellm_usage_subs tool");
     expect(commands[5].template).toContain("actsis_litellm_top tool");
-    expect(commands[6].description).toContain("Revoke");
+    expect(commands[6].template).toContain("actsis_litellm_image tool");
+    expect(commands[7].description).toContain("Revoke");
   });
 });
 
@@ -785,6 +787,7 @@ describe("server plugin (v2 wiring)", () => {
       "actsis_litellm_usage",
       "actsis_litellm_usage_subs",
       "actsis_litellm_top",
+      "actsis_litellm_image",
       "actsis_litellm_logout",
     ]) {
       expect(toolNames).toContain(name);
@@ -797,6 +800,7 @@ describe("server plugin (v2 wiring)", () => {
       "actsis-litellm-usage",
       "actsis-litellm-usage-subs",
       "actsis-litellm-top",
+      "actsis-litellm-image",
       "actsis-litellm-logout",
     ]);
 
@@ -992,6 +996,7 @@ describe("triangulation: alternate v2 wiring cases", () => {
       "actsis-litellm-usage",
       "actsis-litellm-usage-subs",
       "actsis-litellm-top",
+      "actsis-litellm-image",
       "actsis-litellm-logout",
     ]);
   });
