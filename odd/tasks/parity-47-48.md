@@ -74,3 +74,28 @@ credencial/equipo del catálogo (issue pi #48) y generación/edición de imágen
   `@opencode/plugin` 2.0.29). El spike de file-part no se puede ejecutar
   acá: se emiten ambas salidas (file-part + png persistido con su ruta) y la
   verificación en host queda como acceptance pendiente, igual que en pi.
+- L5 (implementación, 2026-10-30): tres cortes de trabajo en la rama
+  `feat/parity-catalog-image`. `85a95b1` T1/T2 (scope del catálogo, 12 tests
+  nuevos en `test/catalog-scope.test.ts` + 4 en `test/tools.test.ts` + guard de
+  `image_generation` en `test/catalog.test.ts`). `c4abe64` T3 (`src/image.ts`,
+  `src/image-tool.ts`, tool `actsis_litellm_image` + comando
+  `actsis-litellm-image`, `ImageError`), 16 tests nuevos en
+  `test/image-command.test.ts`. `3b42d1c` T4 (tool
+  `actsis_litellm_generate_image`, discovery/selección/edits/timeouts/store),
+  20 tests nuevos en `test/image-tool.test.ts` escritos ANTES de la
+  implementación (RED 20/20) y delegados al worker `gentle-ai-worker`.
+- L6 (corrección, 2026-10-30): el contrato de T3 y T4 exportaba dos constantes
+  distintas y la primera versión del port las colisionaba en
+  `IMAGE_TOOL_NAME`; quedó `IMAGE_COMMAND_TOOL_NAME` (`actsis_litellm_image`,
+  superficie del comando) e `IMAGE_TOOL_NAME`
+  (`actsis_litellm_generate_image`, tool model-callable). Además se alineó el
+  port con pi en dos detalles que el worker había desviado: Qwen 768 usa 300 s
+  (solo 1024 va a 600 s) y el multipart de `/v1/images/edits` no manda `size`.
+- L7 (docs, 2026-10-30): README (scope del catálogo y sección "Generación de
+  imágenes"), CHANGELOG y mapa de módulos de `docs/architecture.md` (que
+  además estaba desactualizado: decía "los cuatro tools").
+- L8 (verificación final): `npx vitest run` 534/534 y `npx tsc --noEmit`
+  limpio. Pendiente de acceptance: la verificación en un host real (OpenCode
+  >= 2.0.0) de que el TUI pinta el file-part del resultado; no se puede correr
+  en esta máquina (host instalado 1.18.31, ver L4). El fallback por ruta queda
+  emitido en el mismo resultado.
