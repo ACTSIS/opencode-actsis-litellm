@@ -220,8 +220,32 @@ describe("actsis_litellm_status", () => {
     expect(result.content).toContain("Budget: unavailable");
   });
 
-  it("reports credential rejection on auth failure from the gateway", async () => {
-    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+  it("shows the catalog fetch scope stored with the cache", async () => {
+    await writeFile(
+      path.join(tmpDir, "models-cache.json"),
+      JSON.stringify({
+        version: 2,
+        fetchedAt: Date.now(),
+        models: {},
+        credential: { kind: "oauth", userId: "u-1", teamId: "team-1" },
+      }),
+    );
+
+    const result = await statusExecute(makeDeps())({});
+    expect(result.content).toContain("Catalog scope: OAuth session (team team-1)");
+  });
+
+  it("shows an unknown catalog scope when the cache predates the metadata", async () => {
+    await writeFile(
+      path.join(tmpDir, "models-cache.json"),
+      JSON.stringify({ version: 2, fetchedAt: Date.now(), models: {} }),
+    );
+
+    const result = await statusExecute(makeDeps())({});
+    expect(result.content).toMatch(/Catalog scope: unknown/i);
+  });
+
+  it("reports credential rejection on auth failure from the gateway", async () => {    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
     await writeFile(authPath, JSON.stringify({ "actsis-litellm": { type: "api", key: "sk-rejected" } }));
 
     const fetchImpl = vi.fn(async () => new Response("unauthorized", { status: 401 }));
@@ -555,6 +579,74 @@ describe("actsis_litellm_models", () => {
 
     const cache = JSON.parse(await readFile(path.join(tmpDir, "models-cache.json"), "utf8"));
     expect(Object.keys(cache.models)).toEqual(["new"]);
+  });
+
+  it("persists the credential/team scope and reports it with the re-login hint", async () => {
+    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.includes("/v1/models")) {
+        return new Response(
+          JSON.stringify({ data: [{ id: "oc/glm-5.2", mode: "chat" }] }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.pathname.includes("/model/info")) {
+        return new Response(JSON.stringify([]), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const info = buildLitellmToolInfos({
+      providerId: "actsis-litellm",
+      stateDir: tmpDir,
+      authPath,
+      fetchImpl,
+      getCredential: async () => ({
+        type: "oauth" as const,
+        access: "access-1",
+        refresh: "refresh-1",
+        expires: Date.now() + 3_600_000,
+        metadata: { userId: "u-1", teamId: "team-1" },
+      }),
+    }).find((t) => t.name === "actsis_litellm_models")!;
+
+    const result = (await info.execute({}, makeToolContext())) as { content: string };
+    expect(result.content).toContain("Catalog scope: OAuth session (team team-1)");
+    expect(result.content).toMatch(/login again/i);
+
+    const cache = JSON.parse(await readFile(path.join(tmpDir, "models-cache.json"), "utf8"));
+    expect(cache.credential).toEqual({
+      kind: "oauth",
+      userId: "u-1",
+      teamId: "team-1",
+    });
+  });
+
+  it("reports the API-key scope without a re-login hint on a mixed catalog", async () => {
+    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+    await writeApiKey(authPath);
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.includes("/v1/models")) {
+        return new Response(
+          JSON.stringify({ data: [{ id: "local-chat", mode: "chat" }] }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.pathname.includes("/model/info")) {
+        return new Response(JSON.stringify([]), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await modelsExecute(fetchImpl)({});
+    expect(result.content).toContain("Catalog scope: API key");
+    expect(result.content).not.toMatch(/login again/i);
   });
 });
 

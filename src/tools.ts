@@ -4,6 +4,11 @@ import {
   loadCachedModels,
   saveCachedModels,
   computeCacheAge,
+  loadCachedScope,
+  catalogScopeHint,
+  catalogScopeLine,
+  scopeFromCredential,
+  type CachedCatalogScope,
   type OpencodeModelConfig,
 } from "./catalog-cache.ts";
 import { fetchCatalogModels } from "./catalog.ts";
@@ -303,6 +308,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
       `Provider: ${providerId}`,
       `Auth: ${authType} (expires ${authExpiry})`,
       `Catalog: ${cacheCount} models cached (age ${ageText})`,
+      catalogScopeLine(await loadCachedScope(stateDir)),
       `Gateway URL: ${gatewayUrl}`,
       ...budgetLines,
     ];
@@ -384,13 +390,23 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     for (const model of fresh) {
       record[model.name] = model;
     }
-    await saveCachedModels(record, stateDir);
+    // Record which credential/team produced this catalog (issue pi #48 S3):
+    // the gateway scopes /v1/models per consent-chosen team, so the scope has
+    // to travel with the cache to explain a restricted list later.
+    const scope = await credentialScope();
+    await saveCachedModels(record, stateDir, scope ?? undefined);
 
     const currentIds = Object.keys(record);
     const added = currentIds.filter((id) => !previousSet.has(id)).length;
     const removed = previousIds.filter((id) => !record[id]).length;
 
-    return `Model catalog synced: ${currentIds.length} models available (added ${added}, removed ${removed}). Restart OpenCode to see new models in the picker.`;
+    const lines = [
+      `Model catalog synced: ${currentIds.length} models available (added ${added}, removed ${removed}). Restart OpenCode to see new models in the picker.`,
+      catalogScopeLine(scope),
+    ];
+    const hint = catalogScopeHint(currentIds, scope);
+    if (hint) lines.push(hint);
+    return lines.join("\n");
   };
 
   /**
@@ -398,7 +414,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
    * at login time). The v1 auth.json fallback carries no metadata, so a
    * reader failure simply means the usage query is not user-scoped.
    */
-  const credentialMetadata = async (): Promise<{ metadata?: Record<string, unknown> } | null> => {
+  const credentialMetadata = async (): Promise<StructuralCredential | null> => {
     if (!deps.getCredential) return null;
     try {
       const cred = await deps.getCredential();
@@ -406,6 +422,19 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     } catch {
       return null;
     }
+  };
+
+  /**
+   * The scope this refresh fetches with (issue pi #48 S3): the credential's
+   * own kind plus its userId/teamId metadata, falling back to the auth shape
+   * when the v1 auth.json path carries no metadata.
+   */
+  const credentialScope = async (): Promise<CachedCatalogScope | null> => {
+    const scope = scopeFromCredential(await credentialMetadata());
+    if (scope) return scope;
+    const entry = await readEntry(deps);
+    if (!entry) return null;
+    return { kind: entry.type === "api" ? "api_key" : "oauth" };
   };
 
   const usage = async (args?: string): Promise<string> => {
