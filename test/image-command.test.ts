@@ -10,7 +10,7 @@ import {
   saveImageB64,
 } from "../src/image.ts";
 import { AuthError, CommandError, ImageError } from "../src/errors.ts";
-import { buildImageToolInfos, IMAGE_TOOL_NAME } from "../src/image-tool.ts";
+import { buildImageToolInfos, IMAGE_COMMAND_TOOL_NAME } from "../src/image-tool.ts";
 import { buildCommandDefinitions } from "../src/plugin.ts";
 import type { ToolContentPart } from "../src/tools.ts";
 
@@ -171,15 +171,15 @@ describe("actsis_litellm_image tool", () => {
       authPath,
       imageSaveDir: imageDir,
       fetchImpl,
-    }).find((t) => t.name === IMAGE_TOOL_NAME)!;
+    }).find((t) => t.name === IMAGE_COMMAND_TOOL_NAME)!;
     return (input: Record<string, unknown>) =>
       info.execute(input, {}) as Promise<{ content: string | ReadonlyArray<ToolContentPart> }>;
   }
 
   it("is registered with the documented command surface", () => {
-    expect(IMAGE_TOOL_NAME).toBe("actsis_litellm_image");
+    expect(IMAGE_COMMAND_TOOL_NAME).toBe("actsis_litellm_image");
     const infos = buildImageToolInfos({ providerId: "actsis-litellm" });
-    expect(infos.map((t) => t.name)).toEqual([IMAGE_TOOL_NAME]);
+    expect(infos.map((t) => t.name)).toContain(IMAGE_COMMAND_TOOL_NAME);
     const command = buildCommandDefinitions().find((c) => c.name === "actsis-litellm-image");
     expect(command).toBeDefined();
     expect(command!.template).toContain("actsis_litellm_image");

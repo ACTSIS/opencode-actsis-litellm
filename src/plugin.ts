@@ -39,7 +39,7 @@ import {
   resolveUsageRangeDays,
 } from "./usage.ts";
 import { buildLitellmToolInfos, type ToolDeps } from "./tools.ts";
-import { buildImageToolInfos } from "./image-tool.ts";
+import { buildImageToolInfos, discoverImageModels } from "./image-tool.ts";
 
 const DEFAULT_PROVIDER_ID = "actsis-litellm";
 export { DEFAULT_PROVIDER_ID };
@@ -776,6 +776,35 @@ export async function buildInitialModels(
 }
 
 /**
+ * Discover image model ids at setup time for the generate_image tool
+ * description. Uses the same credential + gateway URL resolution as
+ * buildInitialModels; failures are best-effort and return an empty list.
+ */
+async function discoverImageModelIds(
+  closure: PluginClosure,
+  getCredential?: () => Promise<CredentialValue | null>,
+): Promise<string[]> {
+  const entry = await credentialEntry(closure, getCredential);
+  if (!entry) return [];
+  const token = entry.type === "oauth" ? entry.access : entry.key;
+  const state = await readPluginState(closure.stateDir);
+  const baseUrl = closure.baseUrl ??
+    (state?.gatewayUrl ? normalizeBaseUrl(state.gatewayUrl) : null);
+  if (!token || !baseUrl) return [];
+  try {
+    const options = await discoverImageModels(
+      baseUrl,
+      token,
+      closure.requestTimeoutMs,
+      globalThis.fetch,
+    );
+    return options.map((o) => o.id);
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Minimal structural v2 setup context, structural so tests can exercise
  * setup with minimal fakes without importing OpenCode runtime internals.
  * The `integration.connection` pair is the v2 credential source.
@@ -861,6 +890,7 @@ export default Plugin.define({
     });
 
     // --- Tools ---
+    const imageModelIds = await discoverImageModelIds(closure, getCredential);
     await context.tool.transform((editor) => {
       const toolDeps: ToolDeps = {
         providerId: closure.providerId,
@@ -871,7 +901,7 @@ export default Plugin.define({
       for (const info of buildLitellmToolInfos(toolDeps)) {
         editor.add(info as unknown);
       }
-      for (const info of buildImageToolInfos(toolDeps)) {
+      for (const info of buildImageToolInfos({ ...toolDeps, imageModels: imageModelIds })) {
         editor.add(info as unknown);
       }
     });

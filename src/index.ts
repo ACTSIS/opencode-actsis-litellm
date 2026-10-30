@@ -33,6 +33,19 @@ export {
   type ToolResult,
 } from "./tools.ts";
 
-export { buildImageToolInfos, IMAGE_TOOL_NAME, type ImageToolDeps } from "./image-tool.ts";
+export {
+  buildImageToolInfos,
+  EDIT_MODEL_HINT,
+  IMAGE_COMMAND_TOOL_NAME,
+  IMAGE_TOOL_NAME,
+  ImageSessionStore,
+  discoverImageModels,
+  extractImageModelIds,
+  fetchImageEdit,
+  imageToolTimeoutMs,
+  resolveImageInput,
+  resolveImageModel,
+  type ImageToolDeps,
+} from "./image-tool.ts";
 
 export type { PluginClosure, SetupContext } from "./plugin.ts";
