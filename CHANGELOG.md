@@ -1,22 +1,21 @@
 # Changelog
 
-## Sin publicar
+## 0.6.5 — 2026-11-03 — Emparejada con pi-actsis-litellm
 
-- Añadido: **renders de imagen en background** — espejo de
-  pi-actsis-litellm#61. El tool `actsis_litellm_generate_image` acepta
-  `background: true` y el tool `/actsis-litellm-image` acepta `--background`:
-  la llamada vuelve al instante con un id de job (`img-N`) y la imagen se
-  entrega sola en la conversación cuando termina, sin abrir un turno del
-  modelo (`session.synthetic` con `resume: false`). El camino bloqueante sigue
-  siendo el default; los edits que resuelven `image: "last"` esperan al render
-  pendiente en vez de fallar con un error opaco.
+- Añadido: **renders de imagen en background** — port de pi-actsis-litellm#61.
+  El tool `actsis_litellm_generate_image` acepta `background: true` y el comando
+  `/actsis-litellm-image` acepta `--background`: la llamada vuelve al instante
+  con un id de job (`img-N`) y la imagen se entrega sola en la conversación
+  cuando termina, sin abrir un turno del modelo (`session.synthetic` con
+  `resume: false`). El camino bloqueante sigue siendo el default; los edits que
+  resuelven `image: "last"` esperan al render pendiente en vez de fallar con
+  un error opaco. Cada job tiene su propio `AbortController`, el tope es de 2
+  renders concurrentes (una sola GPU) y el `dispose` del plugin aborta los que
+  queden.
 - Añadido: **tool `actsis_litellm_cancel_image`** +
   `/actsis-litellm-cancel-image` — lista los renders en vuelo (`img-N: modelo
   tamaño estado (Ns)`) o aborta uno por id (o todos), avisando que el render
-  puede seguir corriendo en la GPU del gateway. Cada job tiene su propio
-  `AbortController`, así que el `signal` del turno nunca se reutiliza; el tope
-  es de 2 renders concurrentes (una sola GPU) y el `dispose` del plugin aborta
-  los que queden.
+  puede seguir corriendo en la GPU del gateway.
 - Diferencia declarada con pi: OpenCode no expone línea de estado ni adjunto de
   imagen en un mensaje sintético, así que la entrega es texto con
   `![generated image](<ruta>)` + la ruta del png.
