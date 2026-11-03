@@ -123,3 +123,17 @@ L5 (2026-11-03, parent): verification and slice boundary.
      covered by `test/plugin.test.ts` (`shutdownImageJobs`).
    - Acceptance gap on a real host: `resume: false` actually keeping the turn
      closed, and the synthetic message rendering the markdown image link.
+L6 (2026-11-03, parent): delivery, decided by the owner as "PR + merge + 0.6.5
+   pareado en ambos".
+   - Issue #42; PR #43 merged into `main` (`2f7cb7c`); review-gated plan from
+     `assess` (medium, no reviewDue) applied, so no native review was started:
+     the only workspace candidate the controller projected afterwards was the
+     regenerated `.vitest/json/output.json`, a test artifact, not the change.
+   - Release 0.6.5: branch `release/pair-0.6.5`, commit `23d8888`, PR #44 merged
+     (`8956d7f`), annotated tag `v0.6.5` pushed.
+   - Paired release in `pi-actsis-litellm`: PR #64 merged (`8edcd90`), annotated
+     tag `v0.6.5` pushed; that release carries no functional changes, only the
+     shared number.
+   - Known verification gaps unchanged: the `session.synthetic` `resume: false`
+     behaviour and the markdown image link still need acceptance on a real
+     OpenCode >= 2.0.0 host.
