@@ -76,7 +76,7 @@
     "@opencode/plugin": "^2.0.29"
   },
   "overrides": {
-    "seroval": "^1.6.9",
+    "seroval": "^1.7.7",
     "esbuild": "^0.28.2"
   }
 }
