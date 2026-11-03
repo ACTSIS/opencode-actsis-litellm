@@ -3198,7 +3198,7 @@ var IMAGE_SIZE_MAP = /* @__PURE__ */ new Map([
   ["768", "768x768"],
   ["1024", "1024x1024"]
 ]);
-var IMAGE_USAGE = "Usage: image <prompt> [--size 512|768|1024]";
+var IMAGE_USAGE = "Usage: image <prompt> [--size 512|768|1024] [--background]";
 function imageTimeoutMs(requestTimeoutMs) {
   const MIN_IMAGE_TIMEOUT_MS = 18e4;
   return Math.max(requestTimeoutMs ?? 0, MIN_IMAGE_TIMEOUT_MS);
@@ -3209,6 +3209,7 @@ function parseImageArgs(args) {
     throw new CommandError(IMAGE_USAGE);
   }
   let size = "512";
+  let background = false;
   const promptWords = [];
   for (let i = 0; i < words.length; i++) {
     if (words[i] === "--size") {
@@ -3222,6 +3223,10 @@ function parseImageArgs(args) {
       i++;
       continue;
     }
+    if (words[i] === "--background") {
+      background = true;
+      continue;
+    }
     promptWords.push(words[i]);
   }
   const prompt = promptWords.join(" ").trim();
@@ -3231,7 +3236,8 @@ function parseImageArgs(args) {
   return {
     prompt,
     size: IMAGE_SIZE_MAP.get(size) ?? "512x512",
-    model: IMAGE_DEFAULT_MODEL
+    model: IMAGE_DEFAULT_MODEL,
+    background
   };
 }
 function extractB64Images(body) {
@@ -3245,8 +3251,10 @@ function extractB64Images(body) {
   }
   return images;
 }
-async function fetchImageGeneration(baseUrl, apiKey, options, timeoutMs, fetchImpl = globalThis.fetch) {
+async function fetchImageGeneration(baseUrl, apiKey, options, timeoutMs, fetchImpl = globalThis.fetch, signal) {
   const normalized = baseUrl.replace(/\/+$/, "");
+  const timeoutSignal = AbortSignal.timeout(imageTimeoutMs(timeoutMs));
+  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   let response;
   try {
     response = await fetchImpl(`${normalized}/v1/images/generations`, {
@@ -3262,7 +3270,7 @@ async function fetchImageGeneration(baseUrl, apiKey, options, timeoutMs, fetchIm
         size: options.size,
         output_format: IMAGE_OUTPUT_FORMAT
       }),
-      signal: AbortSignal.timeout(imageTimeoutMs(timeoutMs))
+      signal: combinedSignal
     });
   } catch (err) {
     throw new ImageError(
@@ -3302,16 +3310,112 @@ async function saveImageB64(data, dir) {
   return filePath;
 }
 
+// src/image-jobs.ts
+var MAX_CONCURRENT_IMAGE_JOBS = 2;
+var ImageJobRegistry = class {
+  jobs = /* @__PURE__ */ new Map();
+  counter = 0;
+  get size() {
+    return this.jobs.size;
+  }
+  create(model, size, sessionID) {
+    const running = this.running();
+    if (running.length >= MAX_CONCURRENT_IMAGE_JOBS) {
+      throw new Error(
+        `Too many concurrent image renders (${running.length}/${MAX_CONCURRENT_IMAGE_JOBS}). Running jobs: ${running.map((j) => j.id).join(", ")}. Wait for one to finish or cancel it with the actsis_litellm_cancel_image tool.`
+      );
+    }
+    const id = `img-${++this.counter}`;
+    const job = {
+      id,
+      model,
+      size,
+      sessionID,
+      status: "queued",
+      startedAt: Date.now(),
+      controller: new AbortController()
+    };
+    this.jobs.set(id, job);
+    return job;
+  }
+  get(id) {
+    return this.jobs.get(id);
+  }
+  list() {
+    return Array.from(this.jobs.values());
+  }
+  running() {
+    return this.list().filter((j) => j.status === "running");
+  }
+  active() {
+    return this.list().filter((j) => j.status === "queued" || j.status === "running");
+  }
+  /** Active jobs of one session — the scope of the pending-`last` guard (S9). */
+  activeForSession(sessionID) {
+    return this.active().filter((j) => j.sessionID === sessionID);
+  }
+  start(id) {
+    const job = this.jobs.get(id);
+    if (!job || job.status !== "queued") return false;
+    job.status = "running";
+    return true;
+  }
+  settle(id, status) {
+    const job = this.jobs.get(id);
+    if (!job) return false;
+    job.status = status;
+    return true;
+  }
+  remove(id) {
+    return this.jobs.delete(id);
+  }
+  cancel(id) {
+    const job = this.jobs.get(id);
+    if (!job) return void 0;
+    if (job.status === "done" || job.status === "failed" || job.status === "cancelled") {
+      return void 0;
+    }
+    job.status = "cancelled";
+    job.controller.abort();
+    return job;
+  }
+  cancelAll() {
+    const ids = [];
+    for (const job of this.active()) {
+      if (this.cancel(job.id)) ids.push(job.id);
+    }
+    return ids;
+  }
+  /** `id: model size status (Ns)` lines; the status line pi paints via ui.setStatus. */
+  describeActive() {
+    return this.active().map((job) => {
+      const elapsed = Math.floor((Date.now() - job.startedAt) / 1e3);
+      return `${job.id}: ${job.model} ${job.size} ${job.status} (${elapsed}s)`;
+    });
+  }
+};
+
 // src/image-tool.ts
 var IMAGE_TOOL_NAME = "actsis_litellm_generate_image";
 var EDIT_MODEL_HINT = "edit";
+var CANCEL_IMAGE_TOOL_NAME = "actsis_litellm_cancel_image";
 var IMAGE_COMMAND_TOOL_NAME = "actsis_litellm_image";
 var LEGACY_IMAGE_INPUT = {
   type: "object",
   properties: {
     args: {
       type: "string",
-      description: "The image request: the prompt, optionally followed by --size 512|768|1024 (default 512)."
+      description: "The image request: the prompt, optionally followed by --size 512|768|1024 (default 512) and/or --background to render without blocking the turn."
+    }
+  },
+  additionalProperties: false
+};
+var CANCEL_IMAGE_INPUT = {
+  type: "object",
+  properties: {
+    args: {
+      type: "string",
+      description: "Optional job id to cancel, or 'all'. Omit it to list the renders currently in flight."
     }
   },
   additionalProperties: false
@@ -3334,6 +3438,10 @@ var GENERATE_IMAGE_INPUT = {
     image: {
       type: "string",
       description: "Optional image input for edits: 'last' for the last generated image in this session, or a file path (png/jpg/webp)."
+    },
+    background: {
+      type: "boolean",
+      description: "Render in the background and return a job id immediately. The image is delivered to the conversation by itself; do not call the tool again for the same prompt."
     }
   },
   required: ["prompt"],
@@ -3451,8 +3559,11 @@ var MIME_MAP = /* @__PURE__ */ new Map([
   [".jpeg", "image/jpeg"],
   [".webp", "image/webp"]
 ]);
+function isLastReference(input) {
+  return input === "last" || input === "\xFAltima" || input === "last_image";
+}
 async function resolveImageInput(input, store, sessionId = DEFAULT_SESSION_KEY) {
-  if (input === "last" || input === "\xFAltima" || input === "last_image") {
+  if (isLastReference(input)) {
     const prev = store.get(sessionId);
     if (!prev) {
       throw new CommandError(
@@ -3471,7 +3582,7 @@ async function resolveImageInput(input, store, sessionId = DEFAULT_SESSION_KEY) 
   const data = (await readFile6(input)).toString("base64");
   return { data, mimeType, filePath: input };
 }
-async function fetchImageEdit(baseUrl, apiKey, options, timeoutMs, fetchImpl = globalThis.fetch) {
+async function fetchImageEdit(baseUrl, apiKey, options, timeoutMs, fetchImpl = globalThis.fetch, signal) {
   const normalized = baseUrl.replace(/\/+$/, "");
   const form = new FormData();
   form.append("model", options.model);
@@ -3482,13 +3593,15 @@ async function fetchImageEdit(baseUrl, apiKey, options, timeoutMs, fetchImpl = g
     new Blob([Buffer.from(options.image.data, "base64")], { type: options.image.mimeType }),
     "input.png"
   );
+  const timeoutSignal = AbortSignal.timeout(timeoutMs ?? 18e4);
+  const combinedSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   let response;
   try {
     response = await fetchImpl(`${normalized}/v1/images/edits`, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}` },
       body: form,
-      signal: AbortSignal.timeout(timeoutMs ?? 18e4)
+      signal: combinedSignal
     });
   } catch (err) {
     throw new ImageError(
@@ -3531,6 +3644,65 @@ function normalizeSize(size) {
   if (match) return `${match[1]}x${match[2]}`;
   return "512x512";
 }
+function queuedImageText(job, again) {
+  return `Image render queued as ${job.id} (${job.model} ${job.size}). The image will appear in the conversation by itself when it is ready. ${again}`;
+}
+async function runDetachedImageJob(job, options, label, fetcher) {
+  const { registry, store, imageSaveDir, deliverSynthetic, warn } = options;
+  const deliver = (text, metadata) => {
+    if (!deliverSynthetic || job.sessionID === DEFAULT_SESSION_KEY) return;
+    try {
+      void Promise.resolve(
+        deliverSynthetic({
+          sessionID: job.sessionID,
+          text,
+          description: `actsis-litellm image ${job.id}`,
+          metadata
+        })
+      ).catch(() => {
+      });
+    } catch {
+    }
+  };
+  let outcome = "failed";
+  try {
+    registry.start(job.id);
+    const result = await fetcher();
+    const data = result.images[0];
+    let filePath;
+    try {
+      filePath = await saveImageB64(data, imageSaveDir ?? os7.tmpdir());
+    } catch {
+    }
+    store.set({ data, mimeType: "image/png", filePath }, job.sessionID);
+    outcome = "done";
+    const sizeText = result.size ? ` ${result.size}` : "";
+    const text = filePath ? `${job.id}: ${label} \u2014 ${result.model}${sizeText}
+![generated image](${filePath})
+Saved copy: ${filePath}` : `${job.id}: ${label} \u2014 ${result.model}${sizeText}
+The png copy could not be written, so the image cannot be shown.`;
+    deliver(text, { jobId: job.id, model: result.model, filePath, background: true });
+  } catch (err) {
+    const current = registry.get(job.id);
+    if (current?.status === "cancelled") {
+    } else {
+      const message = errorMessage(err);
+      deliver(`${job.id} failed: ${message}`, { jobId: job.id, error: message });
+      try {
+        warn?.(`${job.id} failed: ${message}`);
+      } catch {
+      }
+    }
+  } finally {
+    const current = registry.get(job.id);
+    if (current?.status === "cancelled") {
+      registry.remove(job.id);
+    } else if (current && (current.status === "queued" || current.status === "running")) {
+      registry.settle(job.id, outcome);
+      if (outcome === "failed") registry.remove(job.id);
+    }
+  }
+}
 function toolDescription(models) {
   const options = models.length > 0 ? models.map((m) => `- ${m}`).join("\n") : "- (discover at call time \u2014 the gateway catalog defines the options)";
   return [
@@ -3566,9 +3738,23 @@ function buildImageToolInfos(deps) {
     timeout,
     onRefreshed,
     imageModels,
-    store: externalStore
+    store: externalStore,
+    registry: externalRegistry,
+    deliverSynthetic,
+    warn
   } = deps;
   const store = externalStore ?? new ImageSessionStore();
+  const registry = externalRegistry ?? new ImageJobRegistry();
+  const warnFailure = warn ?? ((message) => {
+    console.warn(`[actsis-litellm] ${message}`);
+  });
+  const detachedOptions = () => ({
+    registry,
+    store,
+    imageSaveDir: deps.imageSaveDir,
+    deliverSynthetic,
+    warn: warnFailure
+  });
   const resolveContext = async () => {
     const entry = await readEntry(deps);
     if (!entry) {
@@ -3598,6 +3784,31 @@ function buildImageToolInfos(deps) {
       reason: `Image unavailable: ${errorMessage(err)}`
     }));
     if ("reason" in resolved) return { content: resolved.reason };
+    if (parsed.background) {
+      let job;
+      try {
+        job = registry.create(parsed.model, parsed.size, sessionKey(context));
+      } catch (err) {
+        return { content: errorMessage(err) };
+      }
+      void runDetachedImageJob(
+        job,
+        detachedOptions(),
+        `image "${parsed.prompt}"`,
+        () => fetchImageGeneration(
+          resolved.baseUrl,
+          resolved.token,
+          { prompt: parsed.prompt, model: parsed.model, size: parsed.size },
+          timeout,
+          fetchImpl,
+          job.controller.signal
+        )
+      );
+      return {
+        content: queuedImageText(job, "Do not ask for the same image again."),
+        metadata: { jobId: job.id, model: job.model, size: job.size, background: true }
+      };
+    }
     try {
       const result = await fetchImageGeneration(
         resolved.baseUrl,
@@ -3641,6 +3852,14 @@ function buildImageToolInfos(deps) {
     if ("reason" in resolved) return { content: resolved.reason };
     let imageInput = null;
     if (imageInputArg) {
+      if (isLastReference(imageInputArg)) {
+        const pending = registry.activeForSession(sessionKey(context))[0];
+        if (pending) {
+          return {
+            content: `An image render is still in flight as ${pending.id}. Wait for it to finish before referencing image="last".`
+          };
+        }
+      }
       try {
         imageInput = await resolveImageInput(
           imageInputArg,
@@ -3664,7 +3883,7 @@ function buildImageToolInfos(deps) {
       discoveredIds
     );
     const progress = context.progress;
-    if (typeof progress === "function") {
+    if (!input.background && typeof progress === "function") {
       try {
         progress(
           `Generating ${size} image with ${model}${imageInput ? " (edit)" : ""} \u2014 this takes a while...`
@@ -3672,21 +3891,45 @@ function buildImageToolInfos(deps) {
       } catch {
       }
     }
-    try {
-      const timeoutMs = imageToolTimeoutMs(model, size);
-      const result = imageInput ? await fetchImageEdit(
-        resolved.baseUrl,
-        resolved.token,
-        { model, prompt, image: imageInput },
-        timeoutMs,
-        fetchImpl
-      ) : await fetchImageGeneration(
-        resolved.baseUrl,
-        resolved.token,
-        { prompt, model, size },
-        timeoutMs,
-        fetchImpl
+    const timeoutMs = imageToolTimeoutMs(model, size);
+    const fetchOnce = (signal) => imageInput ? fetchImageEdit(
+      resolved.baseUrl,
+      resolved.token,
+      { model, prompt, image: imageInput },
+      timeoutMs,
+      fetchImpl,
+      signal
+    ) : fetchImageGeneration(
+      resolved.baseUrl,
+      resolved.token,
+      { prompt, model, size },
+      timeoutMs,
+      fetchImpl,
+      signal
+    );
+    if (input.background === true) {
+      let job;
+      try {
+        job = registry.create(model, size, sessionKey(context));
+      } catch (err) {
+        return { content: errorMessage(err) };
+      }
+      void runDetachedImageJob(
+        job,
+        detachedOptions(),
+        imageInput ? `generate_image "${prompt}" (edit)` : `generate_image "${prompt}"`,
+        async () => {
+          const result = await fetchOnce(job.controller.signal);
+          return { images: result.images, model: result.model, size: result.size };
+        }
       );
+      return {
+        content: queuedImageText(job, "Do not call the tool again for the same prompt."),
+        metadata: { jobId: job.id, model, size, background: true }
+      };
+    }
+    try {
+      const result = await fetchOnce();
       const data = result.images[0];
       let filePath;
       try {
@@ -3711,10 +3954,31 @@ function buildImageToolInfos(deps) {
       return { content: errorMessage(err) };
     }
   };
+  const cancelImage = async (input) => {
+    const target = typeof input.args === "string" ? input.args.trim() : "";
+    if (target === "all") {
+      const ids = registry.cancelAll();
+      if (ids.length === 0) return { content: "No image renders in flight." };
+      return {
+        content: `Aborted image renders: ${ids.join(", ")}. The render may keep running on the gateway GPU.`
+      };
+    }
+    if (!target) {
+      const lines = registry.describeActive();
+      return { content: lines.length === 0 ? "No image renders in flight." : lines.join("\n") };
+    }
+    const job = registry.cancel(target);
+    if (!job) {
+      return { content: `No active image render with id "${target}".` };
+    }
+    return {
+      content: `Aborted image render ${job.id} (${job.model} ${job.size}). The render may keep running on the gateway GPU.`
+    };
+  };
   return [
     {
       name: IMAGE_COMMAND_TOOL_NAME,
-      description: `Generate an image through the ACTSIS gateway (stable-diffusion.cpp models; the default ${IMAGE_DEFAULT_MODEL} renders pixel-art). Input is the user's raw request: the prompt, optionally followed by \`--size 512|768|1024\`. Generation is synchronous and slow (about 15-60 s at 512, several minutes at 1024). The result carries the rendered image and the saved png path; relay that path to the user.`,
+      description: `Generate an image through the ACTSIS gateway (stable-diffusion.cpp models; the default ${IMAGE_DEFAULT_MODEL} renders pixel-art). Input is the user's raw request: the prompt, optionally followed by \`--size 512|768|1024\` and/or \`--background\`. Generation is synchronous and slow (about 15-60 s at 512, several minutes at 1024); with \`--background\` it returns a job id immediately. The result carries the rendered image and the saved png path; relay that path to the user.`,
       input: LEGACY_IMAGE_INPUT,
       async execute(input, context) {
         const args = typeof input.args === "string" ? input.args : void 0;
@@ -3727,6 +3991,14 @@ function buildImageToolInfos(deps) {
       input: GENERATE_IMAGE_INPUT,
       async execute(input, context) {
         return generateImage(input, context);
+      }
+    },
+    {
+      name: CANCEL_IMAGE_TOOL_NAME,
+      description: "List the image renders currently in flight, or cancel one by id (or all). The gateway renders on one GPU, so a cancelled render may keep running there.",
+      input: CANCEL_IMAGE_INPUT,
+      async execute(input) {
+        return cancelImage(input);
       }
     }
   ];
@@ -3897,8 +4169,13 @@ function buildCommandDefinitions(existing) {
     },
     {
       name: "actsis-litellm-image",
-      description: "Generate an image through the gateway (pixel-art by default); args: <prompt> [--size 512|768|1024]",
-      template: "Use the actsis_litellm_image tool, passing the user's prompt and any --size flag they gave as its args input. Then report the saved png path and the model/size that produced it; do not summarize the image itself."
+      description: "Generate an image through the gateway (pixel-art by default); args: <prompt> [--size 512|768|1024] [--background]",
+      template: "Use the actsis_litellm_image tool, passing the user's prompt and any --size or --background flag they gave as its args input. Then report the saved png path and the model/size that produced it; with --background, report the job id and that the image will appear by itself; do not summarize the image itself."
+    },
+    {
+      name: "actsis-litellm-cancel-image",
+      description: "List the image renders in flight, or cancel one by id (or all); args: [<id>|all]",
+      template: "Use the actsis_litellm_cancel_image tool, passing the job id or the word all the user gave as its args input; omit args to list the renders in flight. Then relay its output verbatim in a fenced code block whose info string is exactly ansi \u2014 ANSI escape sequences included; do not summarize, reformat, or reprocess it."
     },
     {
       name: "actsis-litellm-logout",
@@ -4252,6 +4529,27 @@ async function discoverImageModelIds(closure, getCredential) {
     return [];
   }
 }
+function makeSyntheticDeliverer(session) {
+  return async (message) => {
+    await session.synthetic({
+      sessionID: message.sessionID,
+      text: message.text,
+      ...message.description !== void 0 ? { description: message.description } : {},
+      ...message.metadata !== void 0 ? { metadata: message.metadata } : {},
+      delivery: "queue",
+      resume: false
+    });
+  };
+}
+function shutdownImageJobs(registry) {
+  const ids = registry.cancelAll();
+  if (ids.length > 0) {
+    console.warn(
+      `[actsis-litellm] Aborted ${ids.length} image render(s) (${ids.join(", ")}). The render may keep running on the gateway GPU.`
+    );
+  }
+  return ids;
+}
 var plugin_default = Plugin.define({
   id: DEFAULT_PROVIDER_ID,
   async setup(ctx) {
@@ -4277,6 +4575,8 @@ var plugin_default = Plugin.define({
       });
     });
     const imageModelIds = await discoverImageModelIds(closure, getCredential);
+    const imageJobRegistry = new ImageJobRegistry();
+    const deliverSynthetic = makeSyntheticDeliverer(context.session);
     await context.tool.transform((editor) => {
       const toolDeps = {
         providerId: closure.providerId,
@@ -4287,7 +4587,12 @@ var plugin_default = Plugin.define({
       for (const info of buildLitellmToolInfos(toolDeps)) {
         editor.add(info);
       }
-      for (const info of buildImageToolInfos({ ...toolDeps, imageModels: imageModelIds })) {
+      for (const info of buildImageToolInfos({
+        ...toolDeps,
+        imageModels: imageModelIds,
+        registry: imageJobRegistry,
+        deliverSynthetic
+      })) {
         editor.add(info);
       }
     });
@@ -4368,15 +4673,19 @@ var plugin_default = Plugin.define({
     void eventLoop;
     return async () => {
       controller.abort();
+      shutdownImageJobs(imageJobRegistry);
     };
   }
 });
 export {
+  CANCEL_IMAGE_TOOL_NAME,
   DEFAULT_PROVIDER_ID,
   EDIT_MODEL_HINT,
   IMAGE_COMMAND_TOOL_NAME,
   IMAGE_TOOL_NAME,
+  ImageJobRegistry,
   ImageSessionStore,
+  MAX_CONCURRENT_IMAGE_JOBS,
   buildApiKeyMethodRegistration,
   buildAuthMethodRegistrations,
   buildCommandDefinitions,
@@ -4390,12 +4699,16 @@ export {
   extractImageModelIds,
   fetchImageEdit,
   imageToolTimeoutMs,
+  isLastReference,
   makeAuthFetch,
+  makeSyntheticDeliverer,
   mapModelConfigToInfo,
   normalizeThinkingOption,
   resolveClosure,
   resolveImageInput,
   resolveImageModel,
   resolveToolToken,
-  runBudgetRefresh
+  runBudgetRefresh,
+  runDetachedImageJob,
+  shutdownImageJobs
 };

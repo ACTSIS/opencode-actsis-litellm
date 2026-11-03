@@ -17,12 +17,32 @@ import type { ToolContentPart } from "../src/tools.ts";
 const ONE_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
 
 describe("parseImageArgs", () => {
-  it("defaults to 512 with the pixel-art model", () => {
+  it("defaults to 512 with the pixel-art model and stays blocking", () => {
     expect(parseImageArgs("a dragon")).toEqual({
       prompt: "a dragon",
       size: "512x512",
       model: IMAGE_DEFAULT_MODEL,
+      background: false,
     });
+  });
+
+  it("accepts --background anywhere and keeps it out of the prompt (S3)", () => {
+    expect(parseImageArgs("--background a dragon")).toEqual({
+      prompt: "a dragon",
+      size: "512x512",
+      model: IMAGE_DEFAULT_MODEL,
+      background: true,
+    });
+    const parsed = parseImageArgs("a dragon --size 768 --background");
+    expect(parsed.background).toBe(true);
+    expect(parsed.prompt).toBe("a dragon");
+    expect(parsed.size).toBe("768x768");
+  });
+
+  it("names --background in the usage line", () => {
+    expect(() => parseImageArgs("")).toThrow(
+      "Usage: image <prompt> [--size 512|768|1024] [--background]",
+    );
   });
 
   it("accepts the --size flag anywhere in the args", () => {
@@ -39,8 +59,8 @@ describe("parseImageArgs", () => {
   });
 
   it("rejects an empty prompt with the usage line", () => {
-    expect(() => parseImageArgs("")).toThrow("Usage: image <prompt> [--size 512|768|1024]");
     expect(() => parseImageArgs("--size 768")).toThrow(CommandError);
+    expect(() => parseImageArgs("--background --size 768")).toThrow(CommandError);
   });
 });
 
@@ -111,6 +131,31 @@ describe("fetchImageGeneration", () => {
         size: "512x512",
       }, undefined, fetchImpl),
     ).rejects.toThrow(/Image generation failed: 500: Internal Server Error \(spend, if any/);
+  });
+
+  it("aborts through the job signal, not through the turn signal (S7)", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(
+      (_input: string | URL | Request, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("aborted", "AbortError")),
+          );
+        }),
+    ) as unknown as typeof fetch;
+
+    const pending = fetchImageGeneration(
+      "https://gw.example.com",
+      "sk-test",
+      { prompt: "x", model: IMAGE_DEFAULT_MODEL, size: "512x512" },
+      undefined,
+      fetchImpl,
+      controller.signal,
+    );
+    controller.abort();
+
+    await expect(pending).rejects.toThrow(ImageError);
+    await expect(pending).rejects.toThrow(/aborted/);
   });
 
   it("rejects an empty data[] payload instead of returning nothing", async () => {
@@ -194,7 +239,9 @@ describe("actsis_litellm_image tool", () => {
   it("returns the usage line for empty args without calling the gateway", async () => {
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const result = await imageTool(fetchImpl)({ args: "  " });
-    expect(result.content).toBe("Usage: image <prompt> [--size 512|768|1024]");
+    expect(result.content).toBe(
+      "Usage: image <prompt> [--size 512|768|1024] [--background]",
+    );
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 

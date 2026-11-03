@@ -20,7 +20,7 @@ const IMAGE_SIZE_MAP = new Map<string, string>([
   ["1024", "1024x1024"],
 ]);
 
-export const IMAGE_USAGE = "Usage: image <prompt> [--size 512|768|1024]";
+export const IMAGE_USAGE = "Usage: image <prompt> [--size 512|768|1024] [--background]";
 
 /**
  * Generation is synchronous (512² ≈ 14 s, 1024² ≈ 48 s measured on the
@@ -36,9 +36,11 @@ export interface ParsedImageArgs {
   prompt: string;
   size: string;
   model: string;
+  background: boolean;
 }
 
-/** Parse image args: an optional `--size 512|768|1024` flag and the prompt. */
+/** Parse image args: an optional `--size 512|768|1024` flag, an optional
+ *  `--background` flag (pi #61 S3), and the prompt. */
 export function parseImageArgs(args: string): ParsedImageArgs {
   const words = args.trim().split(/\s+/).filter((w) => w.length > 0);
   if (words.length === 0 || words.every((w) => w === "--")) {
@@ -46,6 +48,7 @@ export function parseImageArgs(args: string): ParsedImageArgs {
   }
 
   let size = "512";
+  let background = false;
   const promptWords: string[] = [];
   for (let i = 0; i < words.length; i++) {
     if (words[i] === "--size") {
@@ -59,6 +62,10 @@ export function parseImageArgs(args: string): ParsedImageArgs {
       i++;
       continue;
     }
+    if (words[i] === "--background") {
+      background = true;
+      continue;
+    }
     promptWords.push(words[i]);
   }
 
@@ -70,6 +77,7 @@ export function parseImageArgs(args: string): ParsedImageArgs {
     prompt,
     size: IMAGE_SIZE_MAP.get(size) ?? "512x512",
     model: IMAGE_DEFAULT_MODEL,
+    background,
   };
 }
 
@@ -109,8 +117,15 @@ export async function fetchImageGeneration(
   options: ImageGenerationOptions,
   timeoutMs?: number,
   fetchImpl: typeof fetch = globalThis.fetch,
+  signal?: AbortSignal,
 ): Promise<ImageGenerationResult> {
   const normalized = baseUrl.replace(/\/+$/, "");
+  // The job owns its controller (pi #61 S7); the timeout stays a separate
+  // budget so a cancel and a timeout are not confused.
+  const timeoutSignal = AbortSignal.timeout(imageTimeoutMs(timeoutMs));
+  const combinedSignal = signal
+    ? AbortSignal.any([signal, timeoutSignal])
+    : timeoutSignal;
   let response: Response;
   try {
     response = await fetchImpl(`${normalized}/v1/images/generations`, {
@@ -126,7 +141,7 @@ export async function fetchImageGeneration(
         size: options.size,
         output_format: IMAGE_OUTPUT_FORMAT,
       }),
-      signal: AbortSignal.timeout(imageTimeoutMs(timeoutMs)),
+      signal: combinedSignal,
     });
   } catch (err) {
     throw new ImageError(
