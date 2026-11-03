@@ -13,9 +13,12 @@ import serverPlugin, {
   normalizeThinkingOption,
   runBudgetRefresh,
   makeAuthFetch,
+  makeSyntheticDeliverer,
+  shutdownImageJobs,
   type PluginClosure,
   type SetupContext,
 } from "../src/plugin.ts";
+import { ImageJobRegistry } from "../src/image-jobs.ts";
 import { writePluginState, readPluginState } from "../src/state.ts";
 import { defaultAuthPath } from "../src/auth-store.ts";
 import type { OpencodeModelConfig } from "../src/catalog-cache.ts";
@@ -55,6 +58,7 @@ function makeFakeContext(options: Record<string, unknown> = {}) {
     }
   > = {};
   const sessionPrompt = vi.fn(async () => ({}) as unknown);
+  const sessionSynthetic = vi.fn(async () => ({}) as unknown);
   const registrations: Array<{ dispose: ReturnType<typeof vi.fn> }> = [];
 
   const register = () => {
@@ -119,6 +123,7 @@ function makeFakeContext(options: Record<string, unknown> = {}) {
     },
     session: {
       prompt: sessionPrompt,
+      synthetic: sessionSynthetic,
       hook: (
         name: string,
         callback: (input: Record<string, unknown>) => unknown,
@@ -141,6 +146,7 @@ function makeFakeContext(options: Record<string, unknown> = {}) {
     methods,
     hooks,
     sessionPrompt,
+    sessionSynthetic,
     registrations,
   };
 }
@@ -322,7 +328,7 @@ describe("mapModelConfigToInfo", () => {
 });
 
 describe("buildCommandDefinitions", () => {
-  it("exposes all eight commands in v2 shape (name/description/template)", () => {
+  it("exposes all nine commands in v2 shape (name/description/template)", () => {
     const commands = buildCommandDefinitions();
     expect(commands.map((c) => c.name)).toEqual([
       "actsis-litellm-status",
@@ -332,6 +338,7 @@ describe("buildCommandDefinitions", () => {
       "actsis-litellm-usage-subs",
       "actsis-litellm-top",
       "actsis-litellm-image",
+      "actsis-litellm-cancel-image",
       "actsis-litellm-logout",
     ]);
     expect(commands[0].template).toContain("actsis_litellm_status tool");
@@ -341,7 +348,8 @@ describe("buildCommandDefinitions", () => {
     expect(commands[4].template).toContain("actsis_litellm_usage_subs tool");
     expect(commands[5].template).toContain("actsis_litellm_top tool");
     expect(commands[6].template).toContain("actsis_litellm_image tool");
-    expect(commands[7].description).toContain("Revoke");
+    expect(commands[7].template).toContain("actsis_litellm_cancel_image tool");
+    expect(commands[8].description).toContain("Revoke");
   });
 });
 
@@ -788,6 +796,7 @@ describe("server plugin (v2 wiring)", () => {
       "actsis_litellm_usage_subs",
       "actsis_litellm_top",
       "actsis_litellm_image",
+      "actsis_litellm_cancel_image",
       "actsis_litellm_logout",
     ]) {
       expect(toolNames).toContain(name);
@@ -801,6 +810,7 @@ describe("server plugin (v2 wiring)", () => {
       "actsis-litellm-usage-subs",
       "actsis-litellm-top",
       "actsis-litellm-image",
+      "actsis-litellm-cancel-image",
       "actsis-litellm-logout",
     ]);
 
@@ -997,6 +1007,7 @@ describe("triangulation: alternate v2 wiring cases", () => {
       "actsis-litellm-usage-subs",
       "actsis-litellm-top",
       "actsis-litellm-image",
+      "actsis-litellm-cancel-image",
       "actsis-litellm-logout",
     ]);
   });
@@ -1006,5 +1017,53 @@ describe("triangulation: alternate v2 wiring cases", () => {
     expect(closure.baseUrl).toBe("https://gw.example.com");
     const info = buildProviderInfo(closure) as unknown as { settings: { baseURL: string } };
     expect(info.settings.baseURL).toBe("https://gw.example.com/v1");
+  });
+});
+
+describe("makeSyntheticDeliverer", () => {
+  it("appends the render without starting a model turn (S5)", async () => {
+    const synthetic = vi.fn(async () => ({}));
+    const deliver = makeSyntheticDeliverer({ synthetic } as never);
+
+    await deliver({
+      sessionID: "ses-1",
+      text: "img-1: generate_image \"a dragon\" — sdxl-pixel-art 512x512",
+      description: "actsis-litellm image img-1",
+      metadata: { jobId: "img-1", background: true },
+    });
+
+    expect(synthetic).toHaveBeenCalledWith({
+      sessionID: "ses-1",
+      text: "img-1: generate_image \"a dragon\" — sdxl-pixel-art 512x512",
+      description: "actsis-litellm image img-1",
+      metadata: { jobId: "img-1", background: true },
+      delivery: "queue",
+      resume: false,
+    });
+  });
+});
+
+describe("shutdownImageJobs", () => {
+  it("aborts in-flight renders once and says the GPU may keep working (S10)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const registry = new ImageJobRegistry();
+      const first = registry.create("sdxl-pixel-art", "512x512", "ses-1");
+      const second = registry.create("qwen-image-edit", "1024x1024", "ses-2");
+      registry.start(first.id);
+      registry.start(second.id);
+
+      expect(shutdownImageJobs(registry)).toEqual([first.id, second.id]);
+      expect(first.controller.signal.aborted).toBe(true);
+      expect(second.controller.signal.aborted).toBe(true);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain("may keep running on the gateway GPU");
+
+      // Idempotent: a second shutdown pass has nothing to abort or report.
+      expect(shutdownImageJobs(registry)).toEqual([]);
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

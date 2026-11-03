@@ -232,7 +232,13 @@ describe("actsis_litellm_generate_image tool", () => {
     expect(IMAGE_TOOL_NAME).toMatch(/^[a-zA-Z0-9_.-]+$/);
 
     const { info } = generateTool();
-    expect(Object.keys(info.input.properties)).toEqual(["prompt", "size", "model", "image"]);
+    expect(Object.keys(info.input.properties)).toEqual([
+      "prompt",
+      "size",
+      "model",
+      "image",
+      "background",
+    ]);
   });
 
   it("carries the discovered image models in its description", () => {

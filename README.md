@@ -161,8 +161,9 @@ disponible.
 | `actsis_litellm_usage` | `/actsis-litellm-usage` | Muestra gasto, tokens y peticiones por modelo para una ventana: sin argumentos (últimos 30 días), un número de días (`14`) o un rango explícito (`2025-03-01 .. 2025-03-31`). Ver [Uso por modelo](#uso-por-modelo). |
 | `actsis_litellm_usage_subs` | `/actsis-litellm-usage-subs` | Muestra, por cada suscripción de Ollama Cloud, el porcentaje restante de la ventana de 5 horas y de la ventana semanal con el tiempo restante hasta el reinicio y los créditos, en formato tabular y con indicadores coloreados por nivel de uso, correlacionados con la ventana transcurrida (escalamiento por ritmo y proyección cuando el consumo va adelantado). Ver [Uso por suscripción](#uso-por-suscripción). |
 | `actsis_litellm_top` | `/actsis-litellm-top` | Activa, desactiva o alterna el widget Top-5 de gasto de la TUI (`on \| off \| toggle`; sin argumentos alterna) y persiste la preferencia. Ver [Widget de la TUI](#widget-de-la-tui). |
-| `actsis_litellm_image` | `/actsis-litellm-image` | Genera una imagen con el modelo por defecto del gateway (`sdxl-pixel-art`, pixel-art) a partir del texto: el prompt y un flag opcional `--size 512\|768\|1024`. Ver [Generación de imágenes](#generación-de-imágenes). |
-| `actsis_litellm_generate_image` | — (el agente la llama desde el chat) | Genera o edita imágenes en lenguaje natural: descubre los modelos de imagen del gateway, elige el modelo (param explícito > imagen de entrada → modelo de edición > default) y acepta `image` = `last` o una ruta png/jpg/webp para editar. Ver [Generación de imágenes](#generación-de-imágenes). |
+| `actsis_litellm_image` | `/actsis-litellm-image` | Genera una imagen con el modelo por defecto del gateway (`sdxl-pixel-art`, pixel-art) a partir del texto: el prompt y los flags opcionales `--size 512\|768\|1024` y `--background`. Ver [Generación de imágenes](#generación-de-imágenes). |
+| `actsis_litellm_generate_image` | — (el agente la llama desde el chat) | Genera o edita imágenes en lenguaje natural: descubre los modelos de imagen del gateway, elige el modelo (param explícito > imagen de entrada → modelo de edición > default) y acepta `image` = `last` o una ruta png/jpg/webp para editar, y `background` = `true` para no bloquear el turno. Ver [Generación de imágenes](#generación-de-imágenes). |
+| `actsis_litellm_cancel_image` | `/actsis-litellm-cancel-image [<id>\|all]` | Lista los renders de imagen en vuelo (`img-N: modelo tamaño estado (Ns)`) o aborta uno por id (o todos), avisando que el render puede seguir corriendo en la GPU del gateway. Ver [Generación de imágenes](#generación-de-imágenes). |
 | `actsis_litellm_logout` | `/actsis-litellm-logout` | Revoca el refresh token (OAuth), limpia el estado local y el caché. |
 
 Los comandos son plantillas ligeras que indican al agente llamar al tool
@@ -179,7 +180,7 @@ hay login nuevo). Los modelos viven en la workstation con
 
 Dos caminos:
 
-- **`/actsis-litellm-image <prompt> [--size 512|768|1024]`** — atajo manual con
+- **`/actsis-litellm-image <prompt> [--size 512|768|1024] [--background]`** — atajo manual con
   el modelo por defecto `sdxl-pixel-art` (estilo pixel-art fijo). El tamaño por
   defecto es 512 por latencia; la generación es síncrona (≈15-60 s a 512, más
   a 1024) y el cliente espera al menos 180 s antes de cortar.
@@ -189,7 +190,36 @@ Dos caminos:
   (`png`/`jpg`/`jpeg`/`webp`) edita por instrucción vía
   `POST /v1/images/edits` (multipart, campo `image[]`). Sin `image` genera desde
   cero. Los timeouts son adaptativos: Qwen 1024 = 600 s, Qwen 512/768 = 300 s,
-  el resto 180 s.
+  el resto 180 s. Con `background: true` la llamada vuelve al instante con un
+  id de job.
+
+### Renders en background
+
+Un render puede correr sin ocupar el turno del chat (espejo de
+pi-actsis-litellm#61). Es **opt-in por llamada**: el camino bloqueante sigue
+siendo el default, porque cuando el modelo necesita el resultado para decidir el
+paso siguiente, esperar es lo correcto.
+
+- `actsis_litellm_generate_image` acepta `background: true`; el atajo manual
+  acepta `--background`. La llamada vuelve con `Image render queued as img-N
+  (modelo tamaño)` y el aviso de no volver a pedir la misma imagen.
+- Cuando el render termina, la imagen aparece **sola** en la conversación: el
+  plugin appendea un mensaje sintético con `![generated image](<ruta>)` y la
+  ruta del png, sin abrir un turno del modelo (`resume: false`). En ese momento
+  también se actualiza el store de la sesión, así que `image: "last"` sirve para
+  el edit siguiente.
+- `/actsis-litellm-cancel-image [<id>|all]` lista los renders en vuelo o los
+  aborta; cada job tiene su propio `AbortController` y avisa que el render puede
+  seguir corriendo en la GPU del gateway. El tope es de **2 renders
+  concurrentes** (una sola GPU): más pedidos solo alargan todas las esperas. Al
+  cerrar OpenCode, el `dispose` del plugin aborta los que queden.
+
+Diferencia declarada con pi: el mensaje sintético de OpenCode es solo texto, así
+que la imagen entregada llega como link markdown + ruta, no como adjunto; y no
+hay línea de estado en la UI (la lista de `cancel-image` cumple ese rol). La
+semántica exacta de `resume: false` (que no abra turno) queda pendiente de
+acceptance en un host OpenCode >= 2.0.0, igual que el file-part del resultado
+sincrónico.
 
 Cada resultado guarda **siempre** una copia `.png`
 (`actsis-image-<epoch>.png` en el directorio temporal del sistema) y devuelve
