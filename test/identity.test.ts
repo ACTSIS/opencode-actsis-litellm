@@ -272,6 +272,25 @@ describe("identity", () => {
         message: "Failed to fetch user info: boom network",
       });
     });
+
+    it("never surfaces the response body when the payload is not valid JSON (S5)", async () => {
+      const secret = "sk-SECRET-MALFORMED";
+      fetchImpl.mockImplementation(
+        async () => new Response(`{"keys":[{"token":"${secret}"`, { status: 200 }),
+      );
+
+      const error = await fetchGatewayIdentity(
+        "https://gateway.example.com",
+        "key",
+        30_000,
+        fetchImpl,
+      ).catch((err: unknown) => err);
+
+      expect(error).toBeInstanceOf(CatalogError);
+      expect((error as Error).message).toBe("user info response is not valid JSON");
+      expect((error as Error).message).not.toContain(secret);
+      expect((error as { cause?: unknown }).cause).toBeUndefined();
+    });
   });
 
   describe("fetchTeamAlias (S4)", () => {
