@@ -14,7 +14,8 @@ function subscriptions(sessionReset: string | null, weeklyReset: string | null):
   return {
     generatedAt: null,
     subscriptions: [{
-      name: "countdown", plan: null, session5h: window, weekly: window,
+      name: "countdown", provider: null, account: null, status: null,
+      plan: null, session5h: window, weekly: window,
       credits: {
         includedUsd: null, includedBalanceUsd: null, purchasedUsd: 2,
         session: { remainingPercent: 80, resetsAt: sessionReset },
@@ -75,8 +76,8 @@ it("matches Pi countdown units, rounding, expired and unavailable resets in ever
         "Sub", "5h used", "5h resets in", "Weekly used", "Weekly resets in", "Credits",
       ]);
       assert.deepEqual(lines[3].split(/\s{2,}/), [
-        "countdown", "▰▰▱▱▱▱▱▱ 20% 7 reqs", sessionText,
-        "▰▰▱▱▱▱▱▱ 30% 7 reqs", weeklyText, "purchased $2.00",
+        "countdown", "▰▰▱▱▱▱▱▱ 20%", sessionText,
+        "▰▰▱▱▱▱▱▱ 30%", weeklyText, "purchased $2.00",
       ]);
     }
   }

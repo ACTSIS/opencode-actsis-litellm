@@ -24,6 +24,41 @@ export {
   runBudgetRefresh,
 } from "./plugin.ts";
 
-export { buildLitellmToolInfos, resolveToolToken, type ToolDeps, type ToolInfo } from "./tools.ts";
+export {
+  buildLitellmToolInfos,
+  resolveToolToken,
+  type ToolContentPart,
+  type ToolDeps,
+  type ToolInfo,
+  type ToolResult,
+} from "./tools.ts";
+
+export {
+  buildImageToolInfos,
+  CANCEL_IMAGE_TOOL_NAME,
+  EDIT_MODEL_HINT,
+  IMAGE_COMMAND_TOOL_NAME,
+  IMAGE_TOOL_NAME,
+  ImageSessionStore,
+  discoverImageModels,
+  extractImageModelIds,
+  fetchImageEdit,
+  imageToolTimeoutMs,
+  isLastReference,
+  runDetachedImageJob,
+  resolveImageInput,
+  resolveImageModel,
+  type ImageToolDeps,
+  type SyntheticDelivery,
+} from "./image-tool.ts";
+
+export {
+  ImageJobRegistry,
+  MAX_CONCURRENT_IMAGE_JOBS,
+  type ImageJob,
+  type ImageJobStatus,
+} from "./image-jobs.ts";
+
+export { makeSyntheticDeliverer, shutdownImageJobs } from "./plugin.ts";
 
 export type { PluginClosure, SetupContext } from "./plugin.ts";

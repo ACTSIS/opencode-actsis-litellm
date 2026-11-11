@@ -123,9 +123,15 @@ export interface WindowQuota {
   resetsAt: string | null;
 }
 
-/** Per-subscription usage returned by the single `/ollama-usage` call. */
+/** Per-subscription usage returned by the single `/subs-usage` call. */
 export interface SubscriptionUsage {
   name: string;
+  /** Schema v2: "ollama" | "chatgpt" | "claude" | ... (absent on legacy payloads). */
+  provider: string | null;
+  /** Schema v2 account suffix inside the provider (legacy payloads: null). */
+  account: string | null;
+  /** Schema v2 status: ok | critical | error (legacy payloads: null). */
+  status: string | null;
   plan: string | null;
   session5h: WindowUsage;
   weekly: WindowUsage;
@@ -201,7 +207,10 @@ function asCredits(value: unknown): SubscriptionCredits {
 function asSubscription(value: unknown): SubscriptionUsage {
   const record = asRecord(value);
   return {
-    name: asString(record.name) ?? "unknown",
+    name: asString(record.name) ?? asString(record.account) ?? "unknown",
+    provider: asString(record.provider),
+    account: asString(record.account),
+    status: asString(record.status),
     plan: asString(record.plan),
     session5h: asWindowUsage(record.session5h),
     weekly: asWindowUsage(record.weekly),
@@ -220,7 +229,9 @@ function parseUsageSubscriptions(body: unknown): UsageSubscriptions {
 
 /**
  * Fetches per-subscription Ollama Cloud usage from the gateway's single
- * `GET /ollama-usage` pass-through endpoint.
+ * `GET /subs-usage` pass-through endpoint (schema v2: one flat list for every
+ * provider). Gateways deployed before the rename only expose
+ * `/ollama-usage`, so a 404 falls back to that legacy alias.
  *
  * The collector returns both the rolling 5h window (`session5h`) and the weekly
  * window in one response, so the plugin issues exactly one upstream GET. The
@@ -238,14 +249,20 @@ export async function fetchUsageSubs(
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<UsageSubscriptions> {
   const normalized = gatewayUrl.replace(/\/+$/, "");
-  const url = `${normalized}/ollama-usage`;
+  const headers = { Authorization: `Bearer ${apiKey}` };
+  const request = (path: string): Promise<Response> =>
+    fetchImpl(`${normalized}${path}`, {
+      headers,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
 
   let response: Response;
   try {
-    response = await fetchImpl(url, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+    response = await request("/subs-usage");
+    if (response.status === 404) {
+      // Gateway predates the rename: the legacy alias serves the same report.
+      response = await request("/ollama-usage");
+    }
   } catch (err) {
     throw new CatalogError(
       `Failed to fetch usage-subs: ${fetchFailureMessage(err)}`,
@@ -296,7 +313,6 @@ function formatWindowCell(
   now: number,
 ): string {
   const usage = window.usageUsd ?? 0;
-  const requests = window.requests ?? 0;
   const elapsed = windowElapsedPercent(window, quota, weekly, now);
 
   // Legacy-plan dashboard quota wins: remaining % (used = 100 - remaining).
@@ -304,13 +320,11 @@ function formatWindowCell(
     const used = clampPercent(100 - quota.remainingPercent);
     const pace = paceOverElapsed(used, elapsed);
     const ahead = pace != null && pace > 1;
-    const run = `${usageGauge(used)} ${Math.round(used)}%${paceProjectionSuffix(used, elapsed)} ${requests.toLocaleString("en-US")} reqs`;
+    const run = `${usageGauge(used)} ${Math.round(used)}%${paceProjectionSuffix(used, elapsed)}`;
     return color
       ? `${gaugeColorAnsi(escalatedUsedPercent(used, ahead))}${run}${GAUGE_ANSI_RESET_DIM}`
       : run;
   }
-
-  const tokens = (window.inputTokens ?? 0) + (window.outputTokens ?? 0);
 
   if (window.limitUsd != null) {
     const limit = window.limitUsd;
@@ -328,13 +342,18 @@ function formatWindowCell(
       : run;
   }
 
-  return `${requests.toLocaleString("en-US")} reqs · ${tokens.toLocaleString("en-US")} tok`;
+  // No quota and no money for this window (e.g. an idle plan window): a dash
+  // keeps the table narrow — request/token counters were dropped on purpose.
+  return "-";
 }
 
 /** Remaining reset duration, rounded up to the window's smallest displayed unit. */
 function formatResetsCell(quota: WindowQuota | null, weekly: boolean, now: number): string {
   const resetsAt = quota?.resetsAt;
-  if (!resetsAt) return "-";
+  // Upstream sends no reset clock while a window is idle: Anthropic returns
+  // five_hour.resets_at = null (isActive: false) until the window is used
+  // again. "full" distinguishes that from missing/broken data.
+  if (!resetsAt) return quota?.remainingPercent === 100 ? "full" : "-";
   const reset = Date.parse(resetsAt);
   if (!Number.isFinite(reset)) return "-";
   const remaining = Math.max(0, reset - now);
@@ -392,7 +411,10 @@ export function formatUsageSubsLines(
 
   const header = ["Sub", "5h used", "5h resets in", "Weekly used", "Weekly resets in", "Credits"];
   const rows = data.subscriptions.map((sub) => [
-    sub.plan ? `${sub.name} (${sub.plan})` : sub.name,
+    // Schema v2 names the provider in each record: `provider:account`, no
+    // plan suffix (the table must fit medium-width terminals). Legacy
+    // payloads have no provider and fall back to their name.
+    sub.provider ? `${sub.provider}:${sub.name}` : sub.name,
     sub.error ? `(error: ${sub.error})` : formatWindowCell(sub.session5h, sub.credits.session, false, color, now),
     sub.error ? "-" : formatResetsCell(sub.credits.session, false, now),
     sub.error ? "-" : formatWindowCell(sub.weekly, sub.credits.weekly, true, color, now),

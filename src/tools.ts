@@ -4,10 +4,23 @@ import {
   loadCachedModels,
   saveCachedModels,
   computeCacheAge,
+  loadCachedScope,
+  catalogScopeHint,
+  catalogScopeLine,
+  scopeFromCredential,
+  type CachedCatalogScope,
   type OpencodeModelConfig,
 } from "./catalog-cache.ts";
 import { fetchCatalogModels } from "./catalog.ts";
 import { fetchGatewayBudget, formatBudgetLine, formatBudgetStatus } from "./budget.ts";
+import {
+  extractCredentialTeamId,
+  fetchGatewayIdentity,
+  fetchTeamAlias,
+  formatTeamLine,
+  formatUserLine,
+  type IdentityState,
+} from "./identity.ts";
 import {
   applyModelAliases,
   extractCredentialUserId,
@@ -97,6 +110,20 @@ export interface ToolDeps {
 }
 
 /**
+ * Tool result content parts: plain text, or a file reference the host may
+ * render (images ride here — see src/image-tool.ts and odd/tasks/parity-47-48.md
+ * S2/S8). Mirrors @opencode/schema's Tool.Content union.
+ */
+export type ToolContentPart =
+  | { type: "text"; text: string }
+  | { type: "file"; uri: string; mime: string; name?: string };
+
+export interface ToolResult {
+  content: string | ReadonlyArray<ToolContentPart>;
+  metadata?: Record<string, unknown>;
+}
+
+/**
  * v2 tool shape (Tool.Info from @opencode/schema/tool): JSON Schema input,
  * an execute returning Tool.Result ({content}), no v1 `args` helper.
  */
@@ -104,7 +131,7 @@ export interface ToolInfo {
   name: string;
   description: string;
   input: { type: "object"; properties: Record<string, unknown>; additionalProperties: false };
-  execute: (input: Record<string, unknown>, context: unknown) => Promise<{ content: string }>;
+  execute: (input: Record<string, unknown>, context: unknown) => Promise<ToolResult>;
 }
 
 const EMPTY_INPUT = { type: "object" as const, properties: {}, additionalProperties: false as const };
@@ -241,10 +268,15 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     const authType = entry?.type ?? "none";
     const authExpiry = formatExpiry(entry);
 
-    let budgetLines = ["Budget: unavailable"];
-    try {
-      if (entry && state?.gatewayUrl) {
-        const token = entry.type === "oauth"
+    // Resolve the access token once so the budget and identity reads share a
+    // single refresh (no duplicated /token round trip). A refresh failure is
+    // rethrown inside the budget block below so its catch semantics stay
+    // byte-identical to the pre-identity behavior.
+    let token: string | null = null;
+    let tokenError: unknown = null;
+    if (entry && state?.gatewayUrl) {
+      try {
+        token = entry.type === "oauth"
           ? await ensureFreshToken(
             { access: entry.access, refresh: entry.refresh, expires: entry.expires },
             {
@@ -255,6 +287,16 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
             },
           )
           : entry.key;
+      } catch (err) {
+        tokenError = err;
+      }
+    }
+
+    let budgetLines = ["Budget: unavailable"];
+    try {
+      if (entry && state?.gatewayUrl) {
+        if (tokenError !== null) throw tokenError;
+        if (token === null) throw new Error("No usable token.");
         const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
         await updatePluginState(
           { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
@@ -299,10 +341,15 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
       }
     }
 
+    const [userLine, teamLine] = await identityLinePair(state, entry, token, tokenError);
+
     const lines = [
       `Provider: ${providerId}`,
       `Auth: ${authType} (expires ${authExpiry})`,
+      userLine,
+      teamLine,
       `Catalog: ${cacheCount} models cached (age ${ageText})`,
+      catalogScopeLine(await loadCachedScope(stateDir)),
       `Gateway URL: ${gatewayUrl}`,
       ...budgetLines,
     ];
@@ -384,13 +431,23 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     for (const model of fresh) {
       record[model.name] = model;
     }
-    await saveCachedModels(record, stateDir);
+    // Record which credential/team produced this catalog (issue pi #48 S3):
+    // the gateway scopes /v1/models per consent-chosen team, so the scope has
+    // to travel with the cache to explain a restricted list later.
+    const scope = await credentialScope();
+    await saveCachedModels(record, stateDir, scope ?? undefined);
 
     const currentIds = Object.keys(record);
     const added = currentIds.filter((id) => !previousSet.has(id)).length;
     const removed = previousIds.filter((id) => !record[id]).length;
 
-    return `Model catalog synced: ${currentIds.length} models available (added ${added}, removed ${removed}). Restart OpenCode to see new models in the picker.`;
+    const lines = [
+      `Model catalog synced: ${currentIds.length} models available (added ${added}, removed ${removed}). Restart OpenCode to see new models in the picker.`,
+      catalogScopeLine(scope),
+    ];
+    const hint = catalogScopeHint(currentIds, scope);
+    if (hint) lines.push(hint);
+    return lines.join("\n");
   };
 
   /**
@@ -398,7 +455,7 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
    * at login time). The v1 auth.json fallback carries no metadata, so a
    * reader failure simply means the usage query is not user-scoped.
    */
-  const credentialMetadata = async (): Promise<{ metadata?: Record<string, unknown> } | null> => {
+  const credentialMetadata = async (): Promise<StructuralCredential | null> => {
     if (!deps.getCredential) return null;
     try {
       const cred = await deps.getCredential();
@@ -406,6 +463,80 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     } catch {
       return null;
     }
+  };
+
+  /**
+   * The two identity lines (S1/S2), best-effort: no usable credential means
+   * no network and the `no credential` forms; a failed /user/info fetch or
+   * token refresh surfaces `unavailable (<single-line reason>)` without
+   * throwing (S6). Team alias resolution is itself best-effort (S4) and only
+   * degrades the team line to the id-only form. The raw /user/info payload
+   * is reduced in memory to the allowlist, never printed or persisted (S5).
+   */
+  const identityLinePair = async (
+    state: PluginState | null,
+    entry: AuthJsonEntry | null,
+    token: string | null,
+    tokenError: unknown,
+  ): Promise<[string, string]> => {
+    if (!entry) {
+      return [
+        formatUserLine({ kind: "no-credential" }),
+        formatTeamLine({ hasCredential: false, teamId: null, teamAlias: null }),
+      ];
+    }
+    const teamId = extractCredentialTeamId(await credentialMetadata());
+    if (!state?.gatewayUrl || !token) {
+      const reason = !state?.gatewayUrl
+        ? "gateway URL not configured"
+        : tokenError instanceof Error
+          ? tokenError.message
+          : String(tokenError);
+      return [
+        formatUserLine({ kind: "unavailable", reason }),
+        formatTeamLine({ hasCredential: true, teamId, teamAlias: null }),
+      ];
+    }
+
+    let identityState: IdentityState;
+    try {
+      identityState = {
+        kind: "ok",
+        identity: await fetchGatewayIdentity(state.gatewayUrl, token, timeout, fetchImpl),
+      };
+    } catch (err) {
+      identityState = {
+        kind: "unavailable",
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    let teamAlias: string | null = null;
+    if (teamId) {
+      try {
+        teamAlias = await fetchTeamAlias(state.gatewayUrl, token, timeout, teamId, fetchImpl);
+      } catch {
+        // Best-effort (S4): unresolved alias shows the id-only form.
+        teamAlias = null;
+      }
+    }
+    return [
+      formatUserLine(identityState),
+      formatTeamLine({ hasCredential: true, teamId, teamAlias }),
+    ];
+  };
+
+  /**
+   * The scope this refresh fetches with (issue pi #48 S3): the credential's
+   * own kind plus its userId/teamId metadata, falling back to the auth shape
+   * when the v1 auth.json path carries no metadata.
+   */
+  const credentialScope = async (): Promise<CachedCatalogScope | null> => {
+    const scope = scopeFromCredential(await credentialMetadata());
+    if (scope) return scope;
+    const entry = await readEntry(deps);
+    if (!entry) return null;
+    return { kind: entry.type === "api" ? "api_key" : "oauth" };
   };
 
   const usage = async (args?: string): Promise<string> => {
