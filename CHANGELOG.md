@@ -1,6 +1,8 @@
 # Changelog
 
-## Sin publicar
+## 0.6.6 — 2026-11-11 — Emparejada con pi-actsis-litellm
+
+### Usuario y team conectados en /status
 
 - Añadido: **usuario y team del gateway en el status** — las líneas
   `User:` y `Team:` (después de `Auth:` y antes de `Catalog:`) muestran el
@@ -18,7 +20,7 @@
   `test/tools.test.ts` no cambian de texto en sus líneas preexistentes.
   Espejo de la feature `status-identity` de pi-actsis-litellm (T3/T4/T5).
 
-## Sin publicar — 2026-11-11 — dependencias: audit en cero
+### Dependencias: audit en cero
 
 - Corregido: **`npm audit` sin vulnerabilidades** (antes 29: 2 high, 27
   moderate). Overrides con selector de rango: `undici@>=6 <7` → `6.29.1`,
