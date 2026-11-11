@@ -18,6 +18,63 @@
   `test/tools.test.ts` no cambian de texto en sus líneas preexistentes.
   Espejo de la feature `status-identity` de pi-actsis-litellm (T3/T4/T5).
 
+## 0.6.5 — 2026-11-03 — Emparejada con pi-actsis-litellm
+
+- Añadido: **renders de imagen en background** — port de pi-actsis-litellm#61.
+  El tool `actsis_litellm_generate_image` acepta `background: true` y el comando
+  `/actsis-litellm-image` acepta `--background`: la llamada vuelve al instante
+  con un id de job (`img-N`) y la imagen se entrega sola en la conversación
+  cuando termina, sin abrir un turno del modelo (`session.synthetic` con
+  `resume: false`). El camino bloqueante sigue siendo el default; los edits que
+  resuelven `image: "last"` esperan al render pendiente en vez de fallar con
+  un error opaco. Cada job tiene su propio `AbortController`, el tope es de 2
+  renders concurrentes (una sola GPU) y el `dispose` del plugin aborta los que
+  queden.
+- Añadido: **tool `actsis_litellm_cancel_image`** +
+  `/actsis-litellm-cancel-image` — lista los renders en vuelo (`img-N: modelo
+  tamaño estado (Ns)`) o aborta uno por id (o todos), avisando que el render
+  puede seguir corriendo en la GPU del gateway.
+- Diferencia declarada con pi: OpenCode no expone línea de estado ni adjunto de
+  imagen en un mensaje sintético, así que la entrega es texto con
+  `![generated image](<ruta>)` + la ruta del png.
+
+## 0.6.4 — 2026-10-30 — Emparejada con pi-actsis-litellm
+
+- Añadido: **scope de la credencial/equipo en el caché del catálogo** — la
+  caché guarda qué credencial la generó (login OAuth con `userId`/`teamId`, o
+  API key) como campo aditivo del esquema v2 (los cachés viejos se leen
+  igual); `/actsis-litellm-status` y `/actsis-litellm-models` lo muestran
+  (`Catalog scope: …`) y el tool de catálogo sugiere re-login cuando hay team y
+  el catálogo es solo `oc/*`. Causa raíz: el gateway recorta `/v1/models` por
+  el equipo elegido en el consent del login. Espejo de pi-actsis-litellm#48.
+- Añadido: **`/actsis-litellm-image` + tool `actsis_litellm_image`** —
+  generación de imágenes con `POST /v1/images/generations` (modelo
+  `sdxl-pixel-art`, `n=1`, png), flag `--size 512|768|1024` (default 512),
+  timeout de cliente de al menos 180 s y errores amigables sin perder el aviso
+  de spend; usa la misma credencial que el chat. El png se persiste siempre y
+  el resultado trae la imagen como adjunto (file-part) más su ruta como
+  fallback. Espejo de pi-actsis-litellm#47.
+- Añadido: **tool `actsis_litellm_generate_image`** — pedir imágenes
+  naturalmente en el chat: descubre los modelos de imagen del gateway
+  (`/v1/models`, modo `image_generation`) para la descripción y la selección
+  (param explícito > imagen de entrada → modelo de edición > default), edita
+  por instrucción con multipart `image[]` usando `image: "last"` (por sesión) o
+  una ruta, y usa timeouts adaptativos (Qwen 1024 = 600 s, Qwen 512/768 =
+  300 s, resto 180 s). Nombres de tool en el charset seguro de proveedores (sin
+  `:`). Espejo de pi-actsis-litellm#47 v2 y sus fixes (#52/#54).
+- Corregido: **un fallo al persistir el png ya no pierde la imagen** — los
+  bytes viajan como data URI inline y el texto lo informa; antes el resultado
+  volvía con forma de éxito sin imagen.
+- Corregido: **`image: "last"` es por sesión** — el store está indexado por
+  `sessionID`, así una sesión no puede editar la imagen de otra.
+- Corregido: **las ediciones no reportan un tamaño que no se envían** — el
+  endpoint de ediciones no recibe `size`, así que el label y el metadata ya no
+  lo afirman.
+- Guard de regresión: los modelos con modo `image_generation` siguen excluidos
+  del selector de chat.
+- Docs: README (scope del catálogo, generación de imágenes) y mapa de módulos
+  de `docs/architecture.md`.
+
 ## 0.6.3 — 2026-10-16 — Emparejada con pi-actsis-litellm
 
 - Añadido: **colores por umbral en las líneas de budget de los tools** — la

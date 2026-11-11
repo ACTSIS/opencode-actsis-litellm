@@ -10,6 +10,7 @@ import {
   loadCachedModels,
   saveCachedModels,
   computeCacheAge,
+  scopeFromCredential,
   type OpencodeModelConfig,
 } from "./catalog-cache.ts";
 import { fetchCatalogModels } from "./catalog.ts";
@@ -38,6 +39,12 @@ import {
   resolveUsageRangeDays,
 } from "./usage.ts";
 import { buildLitellmToolInfos, type ToolDeps } from "./tools.ts";
+import {
+  buildImageToolInfos,
+  discoverImageModels,
+  type SyntheticDelivery,
+} from "./image-tool.ts";
+import { ImageJobRegistry } from "./image-jobs.ts";
 
 const DEFAULT_PROVIDER_ID = "actsis-litellm";
 export { DEFAULT_PROVIDER_ID };
@@ -291,6 +298,20 @@ export function buildCommandDefinitions(existing?: Array<{ name: string }>): Com
       description: "Enable, disable or toggle the Top-5 spend widget (7 UTC days; args: on | off | toggle; omit to toggle).",
       template:
         "Use the actsis_litellm_top tool, passing exactly one of the words on, off or toggle as its args input when the user asked for a specific action; omit args to toggle the current state. Then reply with its output verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.",
+    },
+    {
+      name: "actsis-litellm-image",
+      description:
+        "Generate an image through the gateway (pixel-art by default); args: <prompt> [--size 512|768|1024] [--background]",
+      template:
+        "Use the actsis_litellm_image tool, passing the user's prompt and any --size or --background flag they gave as its args input. Then report the saved png path and the model/size that produced it; with --background, report the job id and that the image will appear by itself; do not summarize the image itself.",
+    },
+    {
+      name: "actsis-litellm-cancel-image",
+      description:
+        "List the image renders in flight, or cancel one by id (or all); args: [<id>|all]",
+      template:
+        "Use the actsis_litellm_cancel_image tool, passing the job id or the word all the user gave as its args input; omit args to list the renders in flight. Then relay its output verbatim in a fenced code block whose info string is exactly ansi — ANSI escape sequences included; do not summarize, reformat, or reprocess it.",
     },
     {
       name: "actsis-litellm-logout",
@@ -749,7 +770,14 @@ export async function buildInitialModels(
       for (const model of fresh) {
         record[model.name] = model;
       }
-      await saveCachedModels(record, closure.stateDir);
+      // Record which credential/team produced this catalog (issue pi #48 S3),
+      // same as the models tool does on a forced refresh.
+      const scope = getCredential
+        ? scopeFromCredential(await getCredential().catch(() => null))
+        : entry
+          ? { kind: entry.type === "api" ? ("api_key" as const) : ("oauth" as const) }
+          : undefined;
+      await saveCachedModels(record, closure.stateDir, scope);
       return toRecord(record);
     } catch {
       return toRecord(cachedRecord);
@@ -757,6 +785,35 @@ export async function buildInitialModels(
   }
 
   return toRecord(cachedRecord);
+}
+
+/**
+ * Discover image model ids at setup time for the generate_image tool
+ * description. Uses the same credential + gateway URL resolution as
+ * buildInitialModels; failures are best-effort and return an empty list.
+ */
+async function discoverImageModelIds(
+  closure: PluginClosure,
+  getCredential?: () => Promise<CredentialValue | null>,
+): Promise<string[]> {
+  const entry = await credentialEntry(closure, getCredential);
+  if (!entry) return [];
+  const token = entry.type === "oauth" ? entry.access : entry.key;
+  const state = await readPluginState(closure.stateDir);
+  const baseUrl = closure.baseUrl ??
+    (state?.gatewayUrl ? normalizeBaseUrl(state.gatewayUrl) : null);
+  if (!token || !baseUrl) return [];
+  try {
+    const options = await discoverImageModels(
+      baseUrl,
+      token,
+      closure.requestTimeoutMs,
+      globalThis.fetch,
+    );
+    return options.map((o) => o.id);
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -800,16 +857,59 @@ export interface SetupContext {
   };
   readonly session: {
     readonly prompt: (input: { sessionID: string; text: string; delivery?: unknown }) => Promise<unknown>;
+    readonly synthetic: (input: {
+      sessionID: string;
+      text: string;
+      description?: string;
+      metadata?: Record<string, unknown>;
+      delivery?: unknown;
+      resume?: boolean;
+    }) => Promise<unknown>;
     readonly hook: (name: string, callback: (input: Record<string, unknown>) => unknown, options?: { providerID?: string }) => unknown;
   };
 }
 
 /**
+ * Delivery of a detached render: append a synthetic session message and do not
+ * start a model turn (pi #61 S5, mapped onto the v2 session API).
+ */
+export function makeSyntheticDeliverer(
+  session: Pick<SetupContext["session"], "synthetic">,
+): (message: SyntheticDelivery) => Promise<void> {
+  return async (message) => {
+    await session.synthetic({
+      sessionID: message.sessionID,
+      text: message.text,
+      ...(message.description !== undefined ? { description: message.description } : {}),
+      ...(message.metadata !== undefined ? { metadata: message.metadata } : {}),
+      delivery: "queue",
+      resume: false,
+    });
+  };
+}
+
+/**
+ * Abort in-flight renders on plugin dispose (pi #61 S10). The v2 API exposes a
+ * single process-wide dispose hook, so this replaces pi's session_shutdown
+ * handler. Idempotent: a second pass has nothing left to abort.
+ */
+export function shutdownImageJobs(registry: ImageJobRegistry): string[] {
+  const ids = registry.cancelAll();
+  if (ids.length > 0) {
+    console.warn(
+      `[actsis-litellm] Aborted ${ids.length} image render(s) (${ids.join(", ")}). ` +
+        "The render may keep running on the gateway GPU.",
+    );
+  }
+  return ids;
+}
+
+/**
  * Server plugin (v2): registers the ACTSIS LiteLLM gateway provider, its
  * dynamic model catalog, the OAuth + API-key auth methods on the linked
- * integration, the six slash commands, the six tools, the session hooks
+ * integration, the nine slash commands, the ten tools, the session hooks
  * (headers / thinking normalization / informational error classification),
- * and the session.idle budget refresh loop.
+ * the session.idle budget refresh loop, and the detached image-job registry.
  */
 export default Plugin.define({
   id: DEFAULT_PROVIDER_ID,
@@ -845,6 +945,10 @@ export default Plugin.define({
     });
 
     // --- Tools ---
+    const imageModelIds = await discoverImageModelIds(closure, getCredential);
+    // Shared across the image tools and the dispose hook (pi #61 T1/T5).
+    const imageJobRegistry = new ImageJobRegistry();
+    const deliverSynthetic = makeSyntheticDeliverer(context.session);
     await context.tool.transform((editor) => {
       const toolDeps: ToolDeps = {
         providerId: closure.providerId,
@@ -853,6 +957,14 @@ export default Plugin.define({
         getCredential,
       };
       for (const info of buildLitellmToolInfos(toolDeps)) {
+        editor.add(info as unknown);
+      }
+      for (const info of buildImageToolInfos({
+        ...toolDeps,
+        imageModels: imageModelIds,
+        registry: imageJobRegistry,
+        deliverSynthetic,
+      })) {
         editor.add(info as unknown);
       }
     });
@@ -949,6 +1061,7 @@ export default Plugin.define({
 
     return async () => {
       controller.abort();
+      shutdownImageJobs(imageJobRegistry);
     };
   },
 });

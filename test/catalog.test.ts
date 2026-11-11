@@ -49,6 +49,21 @@ describe("isChatModelId", () => {
     expect(isChatModelId("anything", "realtime")).toBe(false);
   });
 
+  // Issue pi #48 S4 guard: the image pipeline (gateway mode
+  // `image_generation`) must never leak image models into the chat picker.
+  it("excludes image_generation models from the chat catalog", () => {
+    expect(isChatModelId("sdxl-pixel-art", "image_generation")).toBe(false);
+    expect(isChatModelId("qwen-image-edit", "image_generation")).toBe(false);
+    const models = mapCatalogModels({
+      data: [
+        { id: "gpt-4", mode: "chat" },
+        { id: "sdxl-pixel-art", mode: "image_generation" },
+        { id: "qwen-image-edit", mode: "image_generation" },
+      ],
+    });
+    expect(models.map((m) => m.name)).toEqual(["gpt-4"]);
+  });
+
   it("falls back to conservative id regex when metadata mode is unknown", () => {
     expect(isChatModelId("text-embedding-ada-002")).toBe(false);
     expect(isChatModelId("whisper-1")).toBe(false);
