@@ -8,15 +8,19 @@ Este archivo fija las tareas de este repo.
 ## Estado
 
 - T3/T4 hechas: overrides con selector de rango (`undici@>=6 <7` → 6.29.1,
-  `undici@>=8` → 8.12.4, `vite` → 8.3.3, `seroval` → ^1.6.11) y `solid-js`
-  fijado en `1.9.12` (peer exacto de `@opentui/solid@0.6.5`). De 29 alertas
-  (2 high) a **0 high / 0 critical / 26 moderate**; suite 479/479, `tsc` 0,
-  `npm ci` sin `--force`.
-- Restan 26 moderate, todas dentro del stack `@opencode/plugin@2.0.29`
-  (internos de npm: `@npmcli/*`, sigstore, pacote, cacache, rimraf,
-  make-fetch-happen…) y de `@opentui/solid@0.6.5` (glob, minimatch,
-  babel-plugin-module-resolver). `@opencode/plugin` y `@opencode/util`
-  reportan `fix: false` en esa versión: la corrección real es subir el stack.
+  `undici@>=8` → 8.12.4, `vite` → 8.3.3, `seroval` → ^1.6.11). De 29 alertas
+  (2 high) a 0 high / 0 critical / 26 moderate; suite 479/479, `tsc` 0.
+- T8 hecha: el stack sube a `@opencode/plugin` 2.2.7 y `@opentui/{core,solid}`
+  0.8.4, con overrides nuevos de `glob` 14.0.4, `minimatch` 11.0.8 y
+  `google-auth-library` 10.9.1. **`npm audit` queda en 0 vulnerabilidades**
+  (antes 29). `solid-js` pasa a `^1.9.12`: el pin exacto `1.9.12` que se usó al
+  principio dejaba el árbol inválido (`npm ls` y `npm ci --strict-peer-deps`
+  fallaban) y ya no era necesario con el peer `^1.9.12` de `@opentui/solid`
+  0.8.4.
+- Residual documentado: `@opentui/core@0.8.4` declara `engines.node >=
+  26.4.0` (igual que `0.6.5` en `main`: preexistente). npm no lo aplica por
+  defecto, pero `npm ci --engine-strict` falla en Node 22. Este repo no tiene
+  CI; es el seguimiento pendiente (D2/D5 del verificador independiente).
 
 ## Tasks
 

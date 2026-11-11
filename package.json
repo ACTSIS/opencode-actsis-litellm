@@ -47,7 +47,7 @@
     "@opentui/solid": "^0.8.4",
     "@types/node": "^22",
     "esbuild-plugin-solid": "^0.6.0",
-    "solid-js": "1.9.12",
+    "solid-js": "^1.9.12",
     "tsup": "^8.5.1",
     "typescript": "^5.7",
     "vitest": "^5.0.3"

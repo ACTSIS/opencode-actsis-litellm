@@ -6,8 +6,11 @@
   moderate). Overrides con selector de rango: `undici@>=6 <7` → `6.29.1`,
   `undici@>=8` → `8.12.4`, `vite` → `8.3.3`, `seroval` → `^1.6.11`, más
   `glob` → `14.0.4`, `minimatch` → `11.0.8` y `google-auth-library` →
-  `10.9.1` (este último arrastra `gcp-metadata` y `gaxios` corregidos sin
-  forzar un salto de major sobre un pin exacto).
+  `10.9.1` (este último sustituye el pin `10.5.0`: dentro lleva
+  `gcp-metadata` `8.1.2` y `gaxios` `^7.1.4`, es decir **baja**
+  `gcp-metadata` de `8.1.4` a `8.1.2` para salir del rango afectado
+  `8.1.3–8.1.4`, y baja también `google-logging-utils` `1.2.0` → `1.1.3`;
+  no son subidas sino sustituciones por versiones fuera del rango).
 - Cambiado: stack de peers alineado — `@opencode/plugin` `2.0.29` → `2.2.7`,
   `@opentui/core` y `@opentui/solid` `0.6.5` → `0.8.4`, y los rangos de
   `peerDependencies` alineados con lo que realmente se prueba
@@ -19,9 +22,13 @@
   toda la familia (incluidos `@npmcli/*`, pacote, cacache, sigstore, rimraf,
   make-fetch-happen y npm-registry-fetch, que solo eran vulnerables por sus
   subárboles de `glob`/`minimatch`).
-- Corregido: **`npm ci` deja de requerir `--force`**. `@opentui/solid`
+- Corregido: **`npm ci` deja de requerir `--force`**. `@opentui/solid@0.6.5`
   declaraba `solid-js` exactamente `1.9.12` mientras el repo pedía `^1.9.17`;
-  con `0.8.4` el peer es `^1.9.12` y el pin `1.9.12` resuelve sin flags.
+  con `@opentui/solid@0.8.4` el peer pasa a ser `^1.9.12` y el rango
+  `^1.9.12` resuelve a `1.9.19` sin flags. (`solid-js` se fijó al principio en
+  `1.9.12` exacto para destrabar el ERESOLVE; con el peer nuevo ese pin
+  dejaba el árbol inválido —`npm ls` y `npm ci --strict-peer-deps` fallaban—
+  y se retiró.)
 - Nota de riesgo: los overrides de `glob` (13 → 14) y `minimatch` (→ 11)
   quedan fuera del rango declarado por consumidores de terceros
   (`babel-plugin-module-resolver` pide `glob ^9.3.3`). La API usada por
