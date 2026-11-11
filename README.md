@@ -145,7 +145,7 @@ disponible.
 
 | Tool | Comando | Descripción |
 |------|---------|-------------|
-| `actsis_litellm_status` | `/actsis-litellm-status` | Muestra estado de credenciales, antigüedad y tamaño del caché del catálogo, URL del gateway e información de budget (recurre al último snapshot cacheado entre turnos). El snapshot vivo del budget lleva indicador coloreado por umbral de uso (verde ≤50 %, amarillo 51–75 %, naranja 76–90 %, rojo >90 %); los fallbacks de error/quedada quedan en texto plano. |
+| `actsis_litellm_status` | `/actsis-litellm-status` | Muestra el usuario conectado al gateway y el team de la conexión, el estado de credenciales, la antigüedad y el tamaño del caché del catálogo, la URL del gateway e información de budget (recurre al último snapshot cacheado entre turnos). El snapshot vivo del budget lleva indicador coloreado por umbral de uso (verde ≤50 %, amarillo 51–75 %, naranja 76–90 %, rojo >90 %); los fallbacks de error/quedada quedan en texto plano. Ver [Identidad del usuario y team](#identidad-del-usuario-y-team). |
 | `actsis_litellm_budget` | `/actsis-litellm-budget` | Fuerza una actualización del budget y reporta el resultado exacto (línea del run `$X / $Y used (NN%)` coloreada por umbral de uso — verde ≤50 %, amarillo 51–75 %, naranja 76–90 %, rojo >90 % — o el motivo preciso del fallo en texto plano, además del último snapshot conocido cuando la lectura en vivo falla). |
 | `actsis_litellm_models` | `/actsis-litellm-models` | Fuerza una sincronización fresca del catálogo de modelos y reporta modelos agregados/eliminados. |
 | `actsis_litellm_usage` | `/actsis-litellm-usage` | Muestra gasto, tokens y peticiones por modelo para una ventana: sin argumentos (últimos 30 días), un número de días (`14`) o un rango explícito (`2025-03-01 .. 2025-03-31`). Ver [Uso por modelo](#uso-por-modelo). |
@@ -156,6 +156,40 @@ disponible.
 Los comandos son plantillas ligeras que indican al agente llamar al tool
 correspondiente y resumir el resultado, de modo que funcionan tanto en modo
 TUI como en modo servidor.
+
+## Identidad del usuario y team
+
+`/actsis-litellm-status` (tool `actsis_litellm_status`) muestra dos líneas
+nuevas después de `Auth:` y antes de `Catalog:`, para que siempre sepas con
+qué usuario estás conectado al gateway y con qué team de LiteLLM se habilitó
+la conexión:
+
+```
+Provider: actsis-litellm
+Auth: oauth (expires …)
+User: ricardo.pinto@actsis.com (RPINTO, proxy_admin)
+Team: Acceso-Completo (ad59169e-f0c9-45a3-aa73-eec187533bdf)
+Catalog: N models cached (age …)
+```
+
+- **`User:`** la identidad viene de `GET /user/info` con la credencial
+  vigente: primero el email, si no el alias, si no el `user_id`. El paréntesis
+  lista los descriptores disponibles (alias y rol) sin repetir la identidad.
+  Sin nada resoluble muestra `User: unknown`; sin credencial,
+  `User: no credential`; si la consulta falla (incluido un 401/403 del
+  gateway), `User: unavailable (<motivo en una sola línea>)`.
+- **`Team:`** el id viene de la metadata que el login fijó en la credencial
+  (`teamId`); el alias se resuelve con `GET /team/list` y, si no aparece ahí,
+  con `GET /team/info?team_id=`. Sin alias el equipo se muestra por id
+  (`<teamId> (alias unavailable)`); sin team vinculado,
+  `Team: none (no team bound)`; sin credencial, `Team: no credential`.
+- **Degradación sin bloqueo:** si la consulta de identidad o de alias falla,
+  el resto de las líneas del status queda exactamente igual y el comando
+  responde con las formas degradadas; la identidad nunca es fatal.
+- **Seguridad:** la respuesta de `/user/info` incluye los tokens de las keys
+  en claro; el plugin la reduce en memoria a los campos de la lista blanca
+  (`user_id`, `user_email`, `user_alias`, `user_role`, `teams`), no imprime
+  nada fuera de las dos líneas y no persiste nada en disco.
 
 ## Uso por modelo
 

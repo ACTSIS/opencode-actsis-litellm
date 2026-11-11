@@ -30,6 +30,7 @@ respectivamente).
 | `tools.ts` | Los cuatro tools de diagnóstico (`actsis_litellm_status`, `actsis_litellm_models`, `actsis_litellm_logout`, `actsis_litellm_budget`) con forma v2 `Tool.Info` (`input` JSON Schema + `execute` asíncrono → `{content}`), leen la credencial del reader v2 y limpiar/leer entradas del archivo `auth.json` v1 como fallback. |
 | `auth-store.ts` | Helpers de lectura/clear sobre las entradas de credenciales del archivo `auth.json` de OpenCode (fallback legado v1). |
 | `budget.ts` | Fetch y formateo del budget: gasto/límite/reset, porcentaje de uso, gauge de 8 celdas `▰`/`▱` (`budgetGauge`) y la línea de estado (`formatBudgetStatus`). |
+| `identity.ts` | Identidad del gateway para el status: `GET /user/info` reducida en memoria a la lista blanca (`user_id`, `user_email`, `user_alias`, `user_role`, `teams` — nunca imprime ni persiste el payload crudo con `keys[].token`), alias del team por `/team/list` con fallback `/team/info?team_id=`, formateo de las líneas `User:`/`Team:` con degradación no fatal (`unavailable`, `alias unavailable`, `none (no team bound)`, `no credential`) y lectura de `metadata.teamId` de la credencial v2 (`extractCredentialTeamId`). |
 | `budget-widget.ts` | Lado widget: lee el snapshot persistido del archivo de estado del plugin y calcula la línea a mostrar (devuelve `null` cuando no hay nada confiable que mostrar). |
 | `limit-errors.ts` | Normalización de errores del gateway: parseo de errores estructurados de límites, clasificación de respuestas 429 en budget-exceeded vs throttling, y formateo de mensajes accionables con horas de reset. |
 | `overflow.ts` | Detección de mensajes de error de overflow de la ventana de contexto (para la clasificación informativa del hook `http.response`). |
@@ -42,10 +43,11 @@ respectivamente).
 - **Lado servidor:** `index.ts` re-exporta `plugin.ts`. El `setup(ctx)` de
   `plugin.ts` compone `config.ts`/`gateway-url.ts` (resolución de URL),
   `client.ts` + `oauth.ts` + `pkce.ts` (login), `catalog.ts` +
-  `catalog-cache.ts` (modelos), `tools.ts` (diagnóstico),
-  `limit-errors.ts` + `overflow.ts` (hardening de errores), `auth-store.ts`
-  (fallback credenciales v1), `gateway-client.ts` (tokens frescos) y
-  `budget.ts` + `state.ts` (persistencia del snapshot en `session.idle`).
+  `catalog-cache.ts` (modelos), `tools.ts` (diagnóstico), `identity.ts`
+  (líneas `User:`/`Team:` del status), `limit-errors.ts` + `overflow.ts`
+  (hardening de errores), `auth-store.ts` (fallback credenciales v1),
+  `gateway-client.ts` (tokens frescos) y `budget.ts` + `state.ts`
+  (persistencia del snapshot en `session.idle`).
 - **Lado TUI:** `tui.tsx` es una entrada separada que comparte únicamente
   `budget-widget.ts` (lectura del snapshot y formateo de línea) y el archivo
   de estado con el plugin de servidor. Nunca hace llamadas de red.

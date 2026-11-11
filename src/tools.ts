@@ -9,6 +9,14 @@ import {
 import { fetchCatalogModels } from "./catalog.ts";
 import { fetchGatewayBudget, formatBudgetLine, formatBudgetStatus } from "./budget.ts";
 import {
+  extractCredentialTeamId,
+  fetchGatewayIdentity,
+  fetchTeamAlias,
+  formatTeamLine,
+  formatUserLine,
+  type IdentityState,
+} from "./identity.ts";
+import {
   applyModelAliases,
   extractCredentialUserId,
   fetchGatewayRequests,
@@ -241,10 +249,15 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     const authType = entry?.type ?? "none";
     const authExpiry = formatExpiry(entry);
 
-    let budgetLines = ["Budget: unavailable"];
-    try {
-      if (entry && state?.gatewayUrl) {
-        const token = entry.type === "oauth"
+    // Resolve the access token once so the budget and identity reads share a
+    // single refresh (no duplicated /token round trip). A refresh failure is
+    // rethrown inside the budget block below so its catch semantics stay
+    // byte-identical to the pre-identity behavior.
+    let token: string | null = null;
+    let tokenError: unknown = null;
+    if (entry && state?.gatewayUrl) {
+      try {
+        token = entry.type === "oauth"
           ? await ensureFreshToken(
             { access: entry.access, refresh: entry.refresh, expires: entry.expires },
             {
@@ -255,6 +268,16 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
             },
           )
           : entry.key;
+      } catch (err) {
+        tokenError = err;
+      }
+    }
+
+    let budgetLines = ["Budget: unavailable"];
+    try {
+      if (entry && state?.gatewayUrl) {
+        if (tokenError !== null) throw tokenError;
+        if (token === null) throw new Error("No usable token.");
         const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
         await updatePluginState(
           { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
@@ -299,9 +322,13 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
       }
     }
 
+    const [userLine, teamLine] = await identityLinePair(state, entry, token, tokenError);
+
     const lines = [
       `Provider: ${providerId}`,
       `Auth: ${authType} (expires ${authExpiry})`,
+      userLine,
+      teamLine,
       `Catalog: ${cacheCount} models cached (age ${ageText})`,
       `Gateway URL: ${gatewayUrl}`,
       ...budgetLines,
@@ -406,6 +433,67 @@ export function buildLitellmToolInfos(deps: ToolDeps): ToolInfo[] {
     } catch {
       return null;
     }
+  };
+
+  /**
+   * The two identity lines (S1/S2), best-effort: no usable credential means
+   * no network and the `no credential` forms; a failed /user/info fetch or
+   * token refresh surfaces `unavailable (<single-line reason>)` without
+   * throwing (S6). Team alias resolution is itself best-effort (S4) and only
+   * degrades the team line to the id-only form. The raw /user/info payload
+   * is reduced in memory to the allowlist, never printed or persisted (S5).
+   */
+  const identityLinePair = async (
+    state: PluginState | null,
+    entry: AuthJsonEntry | null,
+    token: string | null,
+    tokenError: unknown,
+  ): Promise<[string, string]> => {
+    if (!entry) {
+      return [
+        formatUserLine({ kind: "no-credential" }),
+        formatTeamLine({ hasCredential: false, teamId: null, teamAlias: null }),
+      ];
+    }
+    const teamId = extractCredentialTeamId(await credentialMetadata());
+    if (!state?.gatewayUrl || !token) {
+      const reason = !state?.gatewayUrl
+        ? "gateway URL not configured"
+        : tokenError instanceof Error
+          ? tokenError.message
+          : String(tokenError);
+      return [
+        formatUserLine({ kind: "unavailable", reason }),
+        formatTeamLine({ hasCredential: true, teamId, teamAlias: null }),
+      ];
+    }
+
+    let identityState: IdentityState;
+    try {
+      identityState = {
+        kind: "ok",
+        identity: await fetchGatewayIdentity(state.gatewayUrl, token, timeout, fetchImpl),
+      };
+    } catch (err) {
+      identityState = {
+        kind: "unavailable",
+        reason: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    let teamAlias: string | null = null;
+    if (teamId) {
+      try {
+        teamAlias = await fetchTeamAlias(state.gatewayUrl, token, timeout, teamId, fetchImpl);
+      } catch {
+        // Best-effort (S4): unresolved alias shows the id-only form.
+        teamAlias = null;
+      }
+    }
+    return [
+      formatUserLine(identityState),
+      formatTeamLine({ hasCredential: true, teamId, teamAlias }),
+    ];
   };
 
   const usage = async (args?: string): Promise<string> => {
