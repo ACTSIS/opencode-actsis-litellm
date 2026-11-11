@@ -2375,6 +2375,129 @@ function computeTopModelRows(summary, publicIds) {
   };
 }
 
+// src/identity.ts
+function nonEmptyString(value) {
+  return typeof value === "string" && value ? value : null;
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function singleLine(reason) {
+  return reason.replace(/\s+/g, " ").trim();
+}
+function formatUserLine(state) {
+  if (state.kind === "no-credential") return "User: no credential";
+  if (state.kind === "unavailable") {
+    return `User: unavailable (${singleLine(state.reason)})`;
+  }
+  const { userEmail, userAlias, userRole, userId } = state.identity;
+  const identity = userEmail ?? userAlias ?? userId;
+  if (!identity) return "User: unknown";
+  const extras = [userAlias, userRole].filter(
+    (value) => !!value && value !== identity
+  );
+  if (extras.length === 0) return `User: ${identity}`;
+  return `User: ${identity} (${extras.join(", ")})`;
+}
+function formatTeamLine(team) {
+  if (!team.hasCredential) return "Team: no credential";
+  if (!team.teamId) return "Team: none (no team bound)";
+  if (team.teamAlias) return `Team: ${team.teamAlias} (${team.teamId})`;
+  return `Team: ${team.teamId} (alias unavailable)`;
+}
+function extractCredentialTeamId(credential) {
+  const metadata = isRecord(credential?.metadata) ? credential.metadata : {};
+  const teamId = metadata.teamId;
+  return typeof teamId === "string" && teamId ? teamId : null;
+}
+function identityFromPayload(body) {
+  const record = isRecord(body) ? body : {};
+  const userInfo = isRecord(record.user_info) ? record.user_info : {};
+  const pick = (key) => nonEmptyString(userInfo[key]) ?? nonEmptyString(record[key]);
+  const teamsRaw = Array.isArray(userInfo.teams) ? userInfo.teams : Array.isArray(record.teams) ? record.teams : [];
+  return {
+    userId: pick("user_id"),
+    userEmail: pick("user_email"),
+    userAlias: pick("user_alias"),
+    userRole: pick("user_role"),
+    teams: teamsRaw.filter(
+      (team) => typeof team === "string" && team.length > 0
+    )
+  };
+}
+async function gatewayJson(baseUrl, route, routeLabel, apiKey, timeoutMs, fetchImpl = globalThis.fetch) {
+  const normalized = baseUrl.replace(/\/+$/, "");
+  let response;
+  try {
+    response = await fetchImpl(`${normalized}${route}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+  } catch (err) {
+    throw new CatalogError(
+      `Failed to fetch ${routeLabel}: ${fetchFailureMessage(err)}`,
+      { cause: err }
+    );
+  }
+  if (response.status === 401 || response.status === 403) {
+    throw new AuthError("Credential rejected by gateway. Run /login again.");
+  }
+  if (!response.ok) {
+    throw new CatalogError(
+      `Failed to fetch ${routeLabel}: ${response.status}: ${response.statusText}`
+    );
+  }
+  try {
+    return await response.json();
+  } catch {
+    throw new CatalogError(`${routeLabel} response is not valid JSON`);
+  }
+}
+async function fetchGatewayIdentity(baseUrl, apiKey, timeoutMs, fetchImpl = globalThis.fetch) {
+  return identityFromPayload(
+    await gatewayJson(baseUrl, "/user/info", "user info", apiKey, timeoutMs, fetchImpl)
+  );
+}
+async function fetchTeamAlias(baseUrl, apiKey, timeoutMs, teamId, fetchImpl = globalThis.fetch) {
+  try {
+    const body = await gatewayJson(
+      baseUrl,
+      "/team/list",
+      "team list",
+      apiKey,
+      timeoutMs,
+      fetchImpl
+    );
+    if (Array.isArray(body)) {
+      const aliases = /* @__PURE__ */ new Map();
+      for (const entry of body) {
+        if (!isRecord(entry)) continue;
+        const entryId = nonEmptyString(entry.team_id);
+        const entryAlias = nonEmptyString(entry.team_alias);
+        if (entryId && entryAlias && !aliases.has(entryId)) {
+          aliases.set(entryId, entryAlias);
+        }
+      }
+      const alias = aliases.get(teamId);
+      if (alias) return alias;
+    }
+  } catch {
+  }
+  try {
+    const body = await gatewayJson(
+      baseUrl,
+      `/team/info?team_id=${encodeURIComponent(teamId)}`,
+      "team info",
+      apiKey,
+      timeoutMs,
+      fetchImpl
+    );
+    if (isRecord(body)) return nonEmptyString(body.team_alias);
+  } catch {
+  }
+  return null;
+}
+
 // src/usage-subs.ts
 var SESSION_WINDOW_MS = 5 * 36e5;
 var WEEK_WINDOW_MS = 7 * 24 * 36e5;
@@ -2774,10 +2897,11 @@ function buildLitellmToolInfos(deps) {
     const cacheCount = cached ? Object.keys(cached).length : 0;
     const authType = entry?.type ?? "none";
     const authExpiry = formatExpiry(entry);
-    let budgetLines = ["Budget: unavailable"];
-    try {
-      if (entry && state?.gatewayUrl) {
-        const token = entry.type === "oauth" ? await ensureFreshToken(
+    let token = null;
+    let tokenError = null;
+    if (entry && state?.gatewayUrl) {
+      try {
+        token = entry.type === "oauth" ? await ensureFreshToken(
           { access: entry.access, refresh: entry.refresh, expires: entry.expires },
           {
             state,
@@ -2786,6 +2910,15 @@ function buildLitellmToolInfos(deps) {
             onRefreshed
           }
         ) : entry.key;
+      } catch (err) {
+        tokenError = err;
+      }
+    }
+    let budgetLines = ["Budget: unavailable"];
+    try {
+      if (entry && state?.gatewayUrl) {
+        if (tokenError !== null) throw tokenError;
+        if (token === null) throw new Error("No usable token.");
         const snapshot = await fetchGatewayBudget(state.gatewayUrl, token, timeout, fetchImpl);
         await updatePluginState(
           { lastBudgetSnapshot: snapshot, budgetRefreshedAt: Date.now() },
@@ -2821,9 +2954,12 @@ function buildLitellmToolInfos(deps) {
         ];
       }
     }
+    const [userLine, teamLine] = await identityLinePair(state, entry, token, tokenError);
     const lines = [
       `Provider: ${providerId}`,
       `Auth: ${authType} (expires ${authExpiry})`,
+      userLine,
+      teamLine,
       `Catalog: ${cacheCount} models cached (age ${ageText})`,
       catalogScopeLine(await loadCachedScope(stateDir)),
       `Gateway URL: ${gatewayUrl}`,
@@ -2915,6 +3051,46 @@ function buildLitellmToolInfos(deps) {
     } catch {
       return null;
     }
+  };
+  const identityLinePair = async (state, entry, token, tokenError) => {
+    if (!entry) {
+      return [
+        formatUserLine({ kind: "no-credential" }),
+        formatTeamLine({ hasCredential: false, teamId: null, teamAlias: null })
+      ];
+    }
+    const teamId = extractCredentialTeamId(await credentialMetadata());
+    if (!state?.gatewayUrl || !token) {
+      const reason = !state?.gatewayUrl ? "gateway URL not configured" : tokenError instanceof Error ? tokenError.message : String(tokenError);
+      return [
+        formatUserLine({ kind: "unavailable", reason }),
+        formatTeamLine({ hasCredential: true, teamId, teamAlias: null })
+      ];
+    }
+    let identityState;
+    try {
+      identityState = {
+        kind: "ok",
+        identity: await fetchGatewayIdentity(state.gatewayUrl, token, timeout, fetchImpl)
+      };
+    } catch (err) {
+      identityState = {
+        kind: "unavailable",
+        reason: err instanceof Error ? err.message : String(err)
+      };
+    }
+    let teamAlias = null;
+    if (teamId) {
+      try {
+        teamAlias = await fetchTeamAlias(state.gatewayUrl, token, timeout, teamId, fetchImpl);
+      } catch {
+        teamAlias = null;
+      }
+    }
+    return [
+      formatUserLine(identityState),
+      formatTeamLine({ hasCredential: true, teamId, teamAlias })
+    ];
   };
   const credentialScope = async () => {
     const scope = scopeFromCredential(await credentialMetadata());

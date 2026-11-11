@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { buildLitellmToolInfos, resolveToolToken, type ToolDeps } from "../src/tools.ts";
+import { buildLitellmToolInfos, resolveToolToken, type StructuralCredential, type ToolDeps } from "../src/tools.ts";
 import { readPluginState, writePluginState } from "../src/state.ts";
 import { defaultAuthPath } from "../src/auth-store.ts";
 import type { ToolContext } from "@opencode/plugin/promise/tool";
@@ -399,6 +399,373 @@ describe("actsis_litellm_status", () => {
       `Key RPINTO: ${gaugeColorAnsi(159)}$158.72 / $100.00 used (159%)${GAUGE_ANSI_RESET_DIM}`,
     );
     expect(result.content).not.toContain("OTHER");
+  });
+
+  /**
+   * V2-style deps whose credential reader returns the given structural
+   * credential (metadata included) — mirrors how plugin.ts wires
+   * `ctx.integration.connection.active` + `resolve`.
+   */
+  function makeV2Deps(
+    credential: StructuralCredential | null,
+    fetchImpl?: typeof fetch,
+  ): ToolDeps {
+    return {
+      providerId: "actsis-litellm",
+      stateDir: tmpDir,
+      authPath,
+      fetchImpl,
+      getCredential:
+        credential === null ? undefined : () => Promise.resolve(credential),
+    };
+  }
+
+  it("shows the User/Team lines between Auth: and Catalog: (S7)", async () => {
+    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+    await writeApiKey(authPath);
+
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: 1.23, max_budget: 10 }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.pathname === "/user/info") {
+        return new Response(
+          JSON.stringify({
+            user_info: {
+              user_id: "user-1",
+              user_email: "ricardo.pinto@actsis.com",
+              user_alias: "RPINTO",
+              user_role: "proxy_admin",
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await statusExecute(makeDeps(fetchImpl))({});
+    const lines = result.content.split("\n");
+    const indexOf = (prefix: string) =>
+      lines.findIndex((line) => line.startsWith(prefix));
+
+    expect(lines[indexOf("User:")]).toBe(
+      "User: ricardo.pinto@actsis.com (RPINTO, proxy_admin)",
+    );
+    expect(lines[indexOf("Team:")]).toBe("Team: none (no team bound)");
+    expect(indexOf("Auth:")).toBeGreaterThan(-1);
+    expect(indexOf("User:")).toBeGreaterThan(indexOf("Auth:"));
+    expect(indexOf("Team:")).toBeGreaterThan(indexOf("User:"));
+    expect(indexOf("Catalog:")).toBeGreaterThan(indexOf("Team:"));
+  });
+
+  it("resolves the team alias from the credential teamId via /team/list (S2, S4)", async () => {
+    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+    await writeApiKey(authPath);
+
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: null }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.pathname === "/user/info") {
+        return new Response(
+          JSON.stringify({
+            user_info: {
+              user_id: "user-1",
+              user_email: "ricardo.pinto@actsis.com",
+              user_alias: "RPINTO",
+              user_role: "proxy_admin",
+              keys: [{ token: "sk-SECRET-KEY-TOKEN" }],
+            },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (url.pathname === "/team/list") {
+        return new Response(
+          JSON.stringify([
+            { team_id: "other-team", team_alias: "Other" },
+            {
+              team_id: "ad59169e-f0c9-45a3-aa73-eec187533bdf",
+              team_alias: "Acceso-Completo",
+            },
+          ]),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await statusExecute(
+      makeV2Deps(
+        { type: "key", key: "sk-test", metadata: { userId: "user-1", teamId: "ad59169e-f0c9-45a3-aa73-eec187533bdf" } },
+        fetchImpl,
+      ),
+    )({});
+
+    expect(result.content).toContain(
+      "Team: Acceso-Completo (ad59169e-f0c9-45a3-aa73-eec187533bdf)",
+    );
+    // S5: the raw /user/info payload (keys[].token in clear text) never leaks
+    // into the status text.
+    expect(result.content).not.toContain("sk-SECRET-KEY-TOKEN");
+  });
+
+  it("falls back to /team/info?team_id= when /team/list has no usable entry (S4)", async () => {
+    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+    await writeApiKey(authPath);
+
+    const urls: string[] = [];
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      urls.push(`${url.pathname}${url.search}`);
+      if (url.pathname === "/team/list") {
+        return new Response(JSON.stringify({ detail: "not an array" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.pathname === "/team/info") {
+        expect(url.searchParams.get("team_id")).toBe(
+          "ad59169e-f0c9-45a3-aa73-eec187533bdf",
+        );
+        return new Response(JSON.stringify({ team_alias: "Acceso-Completo" }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: null }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await statusExecute(
+      makeV2Deps(
+        { type: "key", key: "sk-test", metadata: { teamId: "ad59169e-f0c9-45a3-aa73-eec187533bdf" } },
+        fetchImpl,
+      ),
+    )({});
+
+    expect(result.content).toContain(
+      "Team: Acceso-Completo (ad59169e-f0c9-45a3-aa73-eec187533bdf)",
+    );
+    const teamUrls = urls.filter(
+      (u) => u === "/team/list" || u.startsWith("/team/info?team_id="),
+    );
+    expect(teamUrls).toEqual(["/team/list", "/team/info?team_id=ad59169e-f0c9-45a3-aa73-eec187533bdf"]);
+  });
+
+  it("shows the id-only team line when both alias routes fail (S4)", async () => {
+    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+    await writeApiKey(authPath);
+
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/team/list" || url.pathname === "/team/info") {
+        return new Response("Forbidden", { status: 403 });
+      }
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: null }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await statusExecute(
+      makeV2Deps(
+        { type: "key", key: "sk-test", metadata: { teamId: "ad59169e-f0c9-45a3-aa73-eec187533bdf" } },
+        fetchImpl,
+      ),
+    )({});
+
+    expect(result.content).toContain(
+      "Team: ad59169e-f0c9-45a3-aa73-eec187533bdf (alias unavailable)",
+    );
+  });
+
+  it("reports no team bound for an oauth credential without teamId metadata (S2)", async () => {
+    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+
+    // /user/info returns an object with no allowlisted fields → User: unknown;
+    // the Team line comes from the credential metadata (no teamId).
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: null }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.pathname === "/user/info") {
+        return new Response(JSON.stringify({ spend: 1.5, keys: [{ token: "sk-SECRET" }] }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+    const result = await statusExecute(
+      makeV2Deps(
+        {
+          type: "oauth",
+          access: "access-1",
+          refresh: "refresh-1",
+          expires: Date.now() + 3600_000,
+        },
+        fetchImpl,
+      ),
+    )({});
+
+    expect(result.content).toContain("Team: none (no team bound)");
+    expect(result.content).toContain("User: unknown");
+  });
+
+  it("uses the identity from the v2 oauth credential user info path", async () => {
+    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: null }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.pathname === "/user/info") {
+        return new Response(
+          JSON.stringify({
+            user_id: "user-1",
+            user_info: { spend: 5 },
+          }),
+          { headers: { "Content-Type": "application/json" } },
+        );
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    const result = await statusExecute(
+      makeV2Deps(
+        {
+          type: "oauth",
+          access: "access-1",
+          refresh: "refresh-1",
+          expires: Date.now() + 3600_000,
+        },
+        fetchImpl,
+      ),
+    )({});
+
+    expect(result.content).toContain("User: user-1");
+  });
+
+  it("does not fetch identity when no credential is stored (S1, S2)", async () => {
+    const fetchImpl = vi.fn();
+    const result = await statusExecute(makeDeps(fetchImpl))({});
+
+    expect(result.content).toContain("User: no credential");
+    expect(result.content).toContain("Team: no credential");
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result.content).toContain("Provider: actsis-litellm");
+    expect(result.content).toContain("Auth: none (expires never)");
+    expect(result.content).toContain("Budget: unavailable");
+  });
+
+  it("degrades the User line with a single-line reason on network failure and keeps the rest byte-identical (S1, S6)", async () => {
+    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+    await writeApiKey(authPath);
+
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: 1.23, max_budget: 10 }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error("boom network");
+    });
+
+    const result = await statusExecute(makeDeps(fetchImpl))({});
+    const lines = result.content.split("\n");
+
+    expect(lines).toContain(
+      "User: unavailable (Failed to fetch user info: boom network)",
+    );
+    expect(lines).toContain("Team: none (no team bound)");
+    // Pre-existing lines are byte-identical.
+    expect(lines).toContain(
+      `Budget: ${gaugeColorAnsi(12)}$1.23 / $10.00 used (12%)${GAUGE_ANSI_RESET_DIM}`,
+    );
+    expect(lines).toContain("Provider: actsis-litellm");
+    expect(lines).toContain("Auth: api (expires never)");
+    expect(lines).toContain("Catalog: 0 models cached (age none)");
+    expect(lines).toContain("Gateway URL: https://gw.example.com");
+  });
+
+  it("reflects a 401 AuthError from /user/info as the reason without breaking other lines (S6)", async () => {
+    await writeToolState(tmpDir, { version: 1, gatewayUrl: "https://gw.example.com" });
+    await writeApiKey(authPath);
+
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/key/info") {
+        return new Response(JSON.stringify({ spend: 1.23, max_budget: 10 }), {
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response("Unauthorized", { status: 401 });
+    });
+
+    const result = await statusExecute(makeDeps(fetchImpl))({});
+    const lines = result.content.split("\n");
+
+    expect(lines).toContain(
+      "User: unavailable (Credential rejected by gateway. Run /login again.)",
+    );
+    expect(lines).toContain(
+      `Budget: ${gaugeColorAnsi(12)}$1.23 / $10.00 used (12%)${GAUGE_ANSI_RESET_DIM}`,
+    );
+  });
+
+  it("degrades the User line when the oauth refresh fails (S6)", async () => {
+    await writeToolState(tmpDir, {
+      version: 1,
+      gatewayUrl: "https://gw.example.com",
+      tokenEndpoint: "https://gw.example.com/token",
+      clientId: "client-1",
+      resource: "https://gw.example.com",
+    });
+    await writeFile(
+      authPath,
+      JSON.stringify({
+        "actsis-litellm": {
+          type: "oauth",
+          access: "stale-access",
+          refresh: "refresh-1",
+          expires: Date.now() + 60_000,
+        },
+      }),
+    );
+
+    const fetchImpl = vi.fn(async () => new Response("gateway error", { status: 500 }));
+
+    const result = await statusExecute(makeDeps(fetchImpl))({});
+    const lines = result.content.split("\n");
+
+    expect(lines.find((line) => line.startsWith("User:"))).toMatch(
+      /^User: unavailable \(.+\)$/,
+    );
+    expect(lines).toContain("Team: none (no team bound)");
+    // Pre-existing behavior: a failing refresh lands in the budget catch —
+    // AuthError → rejection line, anything else → generic reason. The
+    // identity lines degrade independently with the same reason.
+    expect(lines.find((line) => line.startsWith("Budget"))).toMatch(
+      /^(Budget: Credential rejected — run \/login again|Budget unavailable: .+)$/,
+    );
   });
 });
 

@@ -1,5 +1,23 @@
 # Changelog
 
+## Sin publicar
+
+- Añadido: **usuario y team del gateway en el status** — las líneas
+  `User:` y `Team:` (después de `Auth:` y antes de `Catalog:`) muestran el
+  usuario conectado al gateway y el team con el que se habilitó la conexión:
+  identidad de `GET /user/info` (email > alias > `user_id`, con alias y rol en
+  el paréntesis) y team de la metadata de la credencial (`teamId` del login),
+  con alias resuelto por `GET /team/list` y fallback `GET /team/info?team_id=`.
+  Degradación no fatal: `unavailable (<motivo>)` si la identidad falla,
+  `alias unavailable` si no hay alias, `none (no team bound)` sin team,
+  `no credential` sin credencial (sin red). La respuesta cruda de `/user/info`
+  se reduce en memoria a la lista blanca (`user_id`, `user_email`,
+  `user_alias`, `user_role`, `teams`); el resto —incluido `keys[].token` en
+  claro— no se imprime ni se persiste. Nuevos módulo
+  `src/identity.ts` y test `test/identity.test.ts`; los 32 tests previos de
+  `test/tools.test.ts` no cambian de texto en sus líneas preexistentes.
+  Espejo de la feature `status-identity` de pi-actsis-litellm (T3/T4/T5).
+
 ## 0.6.5 — 2026-11-03 — Emparejada con pi-actsis-litellm
 
 - Añadido: **renders de imagen en background** — port de pi-actsis-litellm#61.
